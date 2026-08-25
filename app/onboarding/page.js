@@ -1086,14 +1086,14 @@ export default function Onboarding() {
           </p>
           <div style={sectionBoxStyle()}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={fieldCaptionStyle()}>Current weight</div>
+              <div style={fieldCaptionStyle()}>Current weight ({weightUnit})</div>
               <span onClick={toggleWeightUnit} style={unitToggleStyle()}>
                 {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
               </span>
             </div>
             <input
               type="text"
-              placeholder={weightUnit === "lb" ? "e.g. 160" : "e.g. 73"}
+              placeholder={weightUnit === "lb" ? "e.g. 160 lb" : "e.g. 73 kg"}
               value={currentWeight}
               onChange={(e) => setCurrentWeight(e.target.value)}
               style={textInputStyle()}
