@@ -8,6 +8,7 @@ import { useState } from "react";
 const MOCK = {
   weightUnit: "kg",
   weight: {
+    startEntry: { value: 76, date: "2026-07-01" },
     lastEntry: { value: 74.2, date: offsetDate(-1) },
     goal: { value: 67, date: "2026-12-31" },
     nextCheckpoint: { value: 71.5, date: "2026-10-06" },
@@ -17,6 +18,8 @@ const MOCK = {
     type: "Run",
     duration: "35 min",
     status: "not_started", // "not_started" | "in_progress" | "done"
+    weeklyDone: 2,
+    weeklyPlanned: 4,
     details: [
       "Warm-up: 5 min easy jog",
       "Main set: 25 min steady pace, aim for 10:30/mi",
@@ -25,15 +28,19 @@ const MOCK = {
   },
   nutrition: {
     caloriesTarget: 2050,
+    proteinTarget: 150,
     meals: [
-      { name: "Breakfast", calories: 320 },
-      { name: "Lunch", calories: 480 },
-      { name: "Snack", calories: 380 },
+      { name: "Breakfast", calories: 320, protein: 18 },
+      { name: "Lunch", calories: 480, protein: 32 },
+      { name: "Snack", calories: 380, protein: 10 },
     ],
   },
-  mealprep: {
-    cuisines: ["Indian", "Mediterranean"],
-    cadenceLabel: "a few times a week",
+  mealPrep: {
+    preppedOn: offsetDate(-2),
+    dishes: [
+      { name: "Chicken tikka bowl", forMeal: "Lunch", calories: 520, protein: 38 },
+      { name: "Mediterranean chickpea salad", forMeal: "Dinner", calories: 480, protein: 22 },
+    ],
   },
   week: [
     { offset: -1, activity: "Rest" },
@@ -85,6 +92,75 @@ function dayProgressPct() {
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const elapsedMs = now.getTime() - startOfDay.getTime();
   return Math.min(100, Math.max(0, (elapsedMs / (24 * 60 * 60 * 1000)) * 100));
+}
+
+function daysBetween(aIso, bIso) {
+  const a = new Date(aIso);
+  const b = new Date(bIso);
+  return (b.getTime() - a.getTime()) / (1000 * 60 * 60 * 24);
+}
+
+function computeWeightStatus(weight, unit, todayIso) {
+  const start = weight.startEntry;
+  const goal = weight.goal;
+  const totalDays = daysBetween(start.date, goal.date);
+  const elapsedDays = daysBetween(start.date, todayIso);
+  const pct = totalDays > 0 ? Math.min(1, Math.max(0, elapsedDays / totalDays)) : 0;
+  const expectedToday = start.value + (goal.value - start.value) * pct;
+  const actual = weight.lastEntry.value;
+  const isLoss = goal.value < start.value;
+  const diff = actual - expectedToday;
+  const tolerance = unit === "kg" ? 0.7 : 1.5;
+  const behind = isLoss ? diff > tolerance : diff < -tolerance;
+  return { expectedToday, behind };
+}
+
+function weekPacePhrase(done, planned) {
+  const dayOfWeek = new Date().getDay();
+  const elapsedFraction = (dayOfWeek === 0 ? 7 : dayOfWeek) / 7;
+  const expected = planned * elapsedFraction;
+  if (done >= expected - 0.5) {
+    return { text: done + " of " + planned + " sessions this week — right on pace.", ok: true };
+  }
+  return { text: done + " of " + planned + " sessions this week — a bit behind pace.", ok: false };
+}
+
+function mealPrepAnalysis(caloriesSoFar, preppedCalories, target) {
+  const projected = caloriesSoFar + preppedCalories;
+  const diff = projected - target;
+  if (Math.abs(diff) <= 150) {
+    return {
+      text: "Combined with what's already logged, these prepped meals put you right around your " + target + " kcal target.",
+      ok: true,
+    };
+  }
+  if (diff > 150) {
+    return {
+      text:
+        "Combined with what's already logged, these prepped meals would put you about " +
+        Math.round(diff) +
+        " kcal over target — maybe trim a portion.",
+      ok: false,
+    };
+  }
+  return {
+    text:
+      "Combined with what's already logged, these prepped meals leave you about " +
+      Math.round(Math.abs(diff)) +
+      " kcal under target — consider adding a snack.",
+    ok: false,
+  };
+}
+
+function insightBoxStyle(ok) {
+  return {
+    fontSize: 12,
+    color: ok ? "#166534" : "#92400e",
+    background: ok ? "#f0fdf4" : "#fffbeb",
+    padding: "8px 10px",
+    borderRadius: 8,
+    marginTop: 10,
+  };
 }
 
 function cardStyle(color) {
@@ -244,12 +320,21 @@ export default function Home() {
 
   const caloriesEaten = MOCK.nutrition.meals.reduce((sum, m) => sum + m.calories, 0);
   const caloriesPct = (caloriesEaten / MOCK.nutrition.caloriesTarget) * 100;
+  const proteinSoFar = MOCK.nutrition.meals.reduce((sum, m) => sum + (m.protein || 0), 0);
+  const expectedProteinByNow = MOCK.nutrition.proteinTarget * (dayProgressPct() / 100);
+  const proteinBehind = proteinSoFar < expectedProteinByNow - 15;
 
   const status = MOCK.workout.status;
   const statusLabel = status === "done" ? "Done" : status === "in_progress" ? "In progress" : "Not started";
   const statusColor = status === "done" ? "#dcfce7" : status === "in_progress" ? "#fef9c3" : "#eee";
   const statusTextColor = status === "done" ? "#166534" : status === "in_progress" ? "#854d0e" : "#888";
   const buttonLabel = status === "done" ? "View" : status === "in_progress" ? "Continue" : "Start";
+  const weekPace = weekPacePhrase(MOCK.workout.weeklyDone, MOCK.workout.weeklyPlanned);
+
+  const weightStatus = computeWeightStatus(MOCK.weight, MOCK.weightUnit, todayIso);
+
+  const preppedCalories = MOCK.mealPrep.dishes.reduce((sum, d) => sum + d.calories, 0);
+  const prepAnalysis = mealPrepAnalysis(caloriesEaten, preppedCalories, MOCK.nutrition.caloriesTarget);
 
   return (
     <main
@@ -317,6 +402,28 @@ export default function Home() {
             formatDateShort(MOCK.weight.goal.date)
           )}
         </div>
+        <div style={insightBoxStyle(!weightStatus.behind)}>
+          {weightStatus.behind ? (
+            <span>
+              You're a bit behind your target pace.{" "}
+              <button
+                style={{
+                  border: "1px solid #92400e",
+                  background: "transparent",
+                  color: "#92400e",
+                  borderRadius: 6,
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                Adjust plan
+              </button>
+            </span>
+          ) : (
+            "Good progress — right on pace, keep going."
+          )}
+        </div>
       </div>
 
       <div style={cardStyle("#16a34a")} onClick={() => setWorkoutOpen(true)}>
@@ -341,6 +448,7 @@ export default function Home() {
           </div>
         </div>
         <div style={{ fontSize: 12, color: "#2563eb", marginTop: 10 }}>Tap for details ▾ · {buttonLabel}</div>
+        <div style={insightBoxStyle(weekPace.ok)}>{weekPace.text}</div>
       </div>
 
       <div style={cardStyle("#ea580c")}>
@@ -371,6 +479,11 @@ export default function Home() {
             </div>
           ))}
         </div>
+        <div style={insightBoxStyle(!proteinBehind)}>
+          {proteinBehind
+            ? "Protein's light today (" + proteinSoFar + "g so far) — worth catching up at your next meal."
+            : "Protein's on pace today (" + proteinSoFar + "g so far)."}
+        </div>
         <button
           style={{
             width: "100%",
@@ -389,10 +502,29 @@ export default function Home() {
       </div>
 
       <div style={cardStyle("#ea580c")}>
-        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Meal-prep</div>
-        <p style={{ fontSize: 13, color: "#444" }}>
-          Into {MOCK.mealprep.cuisines.join(" and ")} recipes, cooking {MOCK.mealprep.cadenceLabel}.
+        <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 6 }}>Planned meals</div>
+        <p style={{ fontSize: 12, color: "#999", marginBottom: 10 }}>
+          From what you prepped on {formatDateShort(MOCK.mealPrep.preppedOn)}.
         </p>
+        {MOCK.mealPrep.dishes.map((dish, i) => (
+          <div
+            key={i}
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              fontSize: 13,
+              color: "#444",
+              padding: "6px 0",
+              borderTop: i > 0 ? "1px solid #eee" : "none",
+            }}
+          >
+            <span>
+              {dish.name} <span style={{ color: "#999" }}>· {dish.forMeal}</span>
+            </span>
+            <span>{dish.calories} kcal</span>
+          </div>
+        ))}
+        <div style={insightBoxStyle(prepAnalysis.ok)}>{prepAnalysis.text}</div>
       </div>
 
       {workoutOpen && <WorkoutModal workout={MOCK.workout} onClose={() => setWorkoutOpen(false)} />}
