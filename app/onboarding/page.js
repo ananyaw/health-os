@@ -110,6 +110,7 @@ const DIETARY_OPTIONS = [
 ];
 
 const EATING_PATTERN_OPTIONS = [
+  { key: "2meals", label: "2 meals a day", desc: "Two larger meals, no snacking in between." },
   { key: "3meals", label: "3 meals a day", desc: "Standard breakfast, lunch, dinner." },
   { key: "grazing", label: "Grazing / small frequent meals", desc: "Many small meals throughout the day." },
   { key: "if", label: "Intermittent fasting", desc: "Eating window with a fasting period." },
@@ -124,9 +125,29 @@ const ACTIVITY_LEVEL_OPTIONS = [
 ];
 const ACTIVITY_MULTIPLIERS = { sedentary: 1.2, light: 1.375, moderate: 1.55, very: 1.725 };
 
+const SCHEDULE_PREF_OPTIONS = [
+  { key: "consistent", label: "Consistent weekly schedule", desc: "Same days and activities most weeks — easier to build a habit." },
+  { key: "varied", label: "Varied schedule", desc: "Mix it up week to week based on how you're feeling or what's convenient." },
+];
+
+const ACTIVITY_PRIORITY_BASE = {
+  Running: 3,
+  Lifting: 3,
+  Swimming: 2,
+  Cycling: 2,
+  Yoga: 1,
+  Hiking: 1,
+  Rowing: 1,
+  "HIIT/Bootcamp": 1,
+  Pilates: 1,
+  Other: 1,
+};
+
 const SKIPPABLE_STEPS = [
+  "goaldetails",
   "trainerfreq",
   "activities",
+  "schedulepref",
   "access",
   "injuries",
   "calibration",
@@ -143,23 +164,29 @@ function joinWithAnd(arr) {
   return arr.slice(0, -1).join(", ") + ", and " + arr[arr.length - 1];
 }
 
-function nextStep(current, modules) {
+function nextStep(current, modules, goals) {
   const hasNutrition = modules.nutrition;
   const hasMealprep = modules.mealprep;
   const hasExercise = modules.exercise;
-  const showGate = hasExercise || hasNutrition || hasMealprep;
 
+  function afterModules() {
+    if (hasExercise) return "trainerfreq";
+    if (hasNutrition) return "nutrition";
+    if (hasMealprep) return "mealprep";
+    return "done";
+  }
   function afterTrainer() {
     if (hasNutrition) return "nutrition";
     if (hasMealprep) return "mealprep";
     return "done";
   }
 
-  if (current === "goals") return "modules";
-  if (current === "modules") return showGate ? "personalize" : "done";
-  if (current === "personalize") return hasExercise ? "trainerfreq" : afterTrainer();
+  if (current === "goals") return "goaldetails";
+  if (current === "goaldetails") return "modules";
+  if (current === "modules") return afterModules();
   if (current === "trainerfreq") return "activities";
-  if (current === "activities") return "access";
+  if (current === "activities") return "schedulepref";
+  if (current === "schedulepref") return "access";
   if (current === "access") return "injuries";
   if (current === "injuries") return "calibration";
   if (current === "calibration") return "tone";
@@ -168,6 +195,27 @@ function nextStep(current, modules) {
   if (current === "nutrition") return hasMealprep ? "mealprep" : "done";
   if (current === "mealprep") return "done";
   return "done";
+}
+
+function lbToKg(lb) {
+  return lb * 0.453592;
+}
+function kgToLb(kg) {
+  return kg / 0.453592;
+}
+function ftInToCm(ft, inch) {
+  return (ft * 12 + inch) * 2.54;
+}
+function cmToFtIn(cm) {
+  const totalIn = cm / 2.54;
+  const ft = Math.floor(totalIn / 12);
+  const inch = Math.round(totalIn - ft * 12);
+  return { ft: ft, inch: inch };
+}
+function getWeightKg(valStr, unit) {
+  const v = parseFloat(valStr);
+  if (!v) return null;
+  return unit === "lb" ? lbToKg(v) : v;
 }
 
 function computeSuggestedTargets({ age, sex, weightKg, goalWeightKg, heightCm, activityKey, goals }) {
@@ -237,25 +285,34 @@ function formatDate(iso) {
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
+function formatDateShort(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
-function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }) {
+function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, weightUnit }) {
   if (!goals.includes("Lose weight")) return null;
   const cur = parseFloat(currentWeight);
   const goal = parseFloat(goalWeight);
+  const unitLabel = weightUnit;
   if (!cur || !goal) {
-    return { title: "Weight", body: "Add your current and goal weight above to see a suggested pace." };
+    return { title: "Weight", body: "Add your current and goal weight to see a suggested pace." };
   }
 
   const diff = cur - goal;
   const isLoss = diff > 0;
   const absDiff = Math.abs(diff);
 
-  if (absDiff < 0.5) {
+  const negligible = weightUnit === "kg" ? 0.5 : 1;
+  if (absDiff < negligible) {
     return { title: "Weight", body: "Your current and goal weight are basically the same — nothing to plan here." };
   }
 
-  const safeMin = isLoss ? 0.25 : 0.15;
-  const safeMax = isLoss ? 1.0 : 0.5;
+  const isMetric = weightUnit === "kg";
+  const safeMin = isLoss ? (isMetric ? 0.45 : 1) : (isMetric ? 0.1 : 0.25);
+  const safeMax = isLoss ? (isMetric ? 0.9 : 2) : (isMetric ? 0.25 : 0.5);
   const midRate = (safeMin + safeMax) / 2;
 
   const weeks = weeksBetween(weightGoalDate);
@@ -271,16 +328,9 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }) {
       applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
       body:
         (weeks === null ? "Add a target date for " : "Your target date has passed for ") +
-        cur +
-        "kg → " +
-        goal +
-        "kg. At a sustainable pace (~" +
-        midRate.toFixed(2) +
-        "kg/week), that's about " +
-        Math.round(recWeeks) +
-        " weeks out — around " +
-        formatDate(recIso) +
-        ".",
+        cur + unitLabel + " → " + goal + unitLabel +
+        ". At a sustainable pace (~" + midRate.toFixed(2) + unitLabel + "/week), that's about " +
+        Math.round(recWeeks) + " weeks out — around " + formatDate(recIso) + ".",
     };
   }
 
@@ -296,24 +346,10 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }) {
       recommendedValue: recIso,
       applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
       body:
-        cur +
-        "kg → " +
-        goal +
-        "kg by " +
-        formatDate(weightGoalDate) +
-        " implies ~" +
-        impliedRate.toFixed(2) +
-        "kg/week — faster than the generally sustainable range (" +
-        safeMin +
-        "-" +
-        safeMax +
-        "kg/week). A more realistic target date would be around " +
-        formatDate(recIso) +
-        " (~" +
-        Math.round(recWeeks) +
-        " weeks, " +
-        safeMax +
-        "kg/week).",
+        cur + unitLabel + " → " + goal + unitLabel + " by " + formatDate(weightGoalDate) +
+        " implies ~" + impliedRate.toFixed(2) + unitLabel + "/week — faster than the generally sustainable range (" +
+        safeMin + "-" + safeMax + unitLabel + "/week). A more realistic target date would be around " +
+        formatDate(recIso) + " (~" + Math.round(recWeeks) + " weeks, " + safeMax + unitLabel + "/week).",
     };
   }
 
@@ -323,18 +359,17 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }) {
     title: "Weight",
     flag: false,
     body:
-      cur +
-      "kg → " +
-      goal +
-      "kg by " +
-      formatDate(weightGoalDate) +
-      " works out to ~" +
-      impliedRate.toFixed(2) +
-      "kg/week — a realistic pace. Halfway point: ~" +
-      midWeight.toFixed(1) +
-      "kg by " +
-      formatDate(midIso) +
-      ".",
+      cur + unitLabel + " → " + goal + unitLabel + " by " + formatDate(weightGoalDate) +
+      " works out to ~" + impliedRate.toFixed(2) + unitLabel + "/week — a realistic pace. Halfway point: ~" +
+      midWeight.toFixed(1) + unitLabel + " by " + formatDate(midIso) + ".",
+    timeline: {
+      color: "#2563eb",
+      points: [
+        { label: "Today", sub: cur + unitLabel, pct: 0 },
+        { label: "Halfway", sub: midWeight.toFixed(1) + unitLabel + " · " + formatDateShort(midIso), pct: 50 },
+        { label: "Goal", sub: goal + unitLabel + " · " + formatDateShort(weightGoalDate), pct: 100 },
+      ],
+    },
   };
 }
 
@@ -366,10 +401,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
       recommendedValue: "Just finish comfortably",
       applyLabel: "Use this goal instead",
       body:
-        "Only ~" +
-        Math.round(weeks) +
-        " weeks out, training " +
-        (currentFreq || "rarely") +
+        "Only ~" + Math.round(weeks) + " weeks out, training " + (currentFreq || "rarely") +
         " — tight to build up safely. We'd recommend treating this one as a “just finish” goal rather than chasing a specific time.",
     };
   }
@@ -379,9 +411,14 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
       title: "Event: " + eventName,
       flag: false,
       body:
-        "~" +
-        Math.round(weeks) +
-        " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
+        "~" + Math.round(weeks) + " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
+      timeline: {
+        color: "#16a34a",
+        points: [
+          { label: "Today", sub: "", pct: 0 },
+          { label: eventName, sub: formatDateShort(eventDate) + " · " + (eventGoal || "Just finish"), pct: 100 },
+        ],
+      },
     };
   }
 
@@ -389,12 +426,15 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
     title: "Event: " + eventName,
     flag: false,
     body:
-      "~" +
-      Math.round(weeks) +
-      " weeks until " +
-      eventName +
-      (eventGoal ? " — goal: " + eventGoal : "") +
+      "~" + Math.round(weeks) + " weeks until " + eventName + (eventGoal ? " — goal: " + eventGoal : "") +
       ". Reasonable runway — we'll build the week-by-week plan once your trainer profile is set up.",
+    timeline: {
+      color: "#16a34a",
+      points: [
+        { label: "Today", sub: "", pct: 0 },
+        { label: eventName, sub: formatDateShort(eventDate) + (eventGoal ? " · " + eventGoal : ""), pct: 100 },
+      ],
+    },
   };
 }
 
@@ -403,10 +443,7 @@ function buildMuscleNote({ goals, muscleTarget, muscleGoalDate }) {
   return {
     title: "Muscle / strength",
     body: muscleTarget
-      ? "Target: " +
-        muscleTarget +
-        (muscleGoalDate ? " by " + formatDate(muscleGoalDate) : "") +
-        ". We'll track progress once training starts."
+      ? "Target: " + muscleTarget + (muscleGoalDate ? " by " + formatDate(muscleGoalDate) : "") + ". We'll track progress once training starts."
       : "No specific target set — we'll suggest one once training starts.",
   };
 }
@@ -415,10 +452,54 @@ function buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }) {
   const simple = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
   return simple.map((g) => ({
     title: g === "Other" && otherGoalText ? otherGoalText : g,
-    body: simpleGoalDates[g]
-      ? "Check-in by " + formatDate(simpleGoalDates[g]) + "."
-      : "No check-in date set — that's fine, we'll follow up naturally.",
+    body: simpleGoalDates[g] ? "Check-in by " + formatDate(simpleGoalDates[g]) + "." : "No check-in date set — that's fine, we'll follow up naturally.",
   }));
+}
+
+function parseFreqMid(freqStr) {
+  if (!freqStr) return 3;
+  if (freqStr.indexOf("0 days") === 0) return 0;
+  if (freqStr.indexOf("1-2") === 0) return 2;
+  if (freqStr.indexOf("3-4") === 0) return 4;
+  if (freqStr.indexOf("5+") === 0) return 5;
+  return 3;
+}
+
+function buildExerciseBreakdown({ activities, desiredFreq, goals, eventName }) {
+  if (!activities || activities.length === 0) return null;
+  const total = parseFreqMid(desiredFreq);
+  if (total <= 0) return { total: 0, items: [] };
+
+  const priorities = activities.map((a) => {
+    let score = ACTIVITY_PRIORITY_BASE[a] || 1;
+    if (a === "Lifting" && goals.indexOf("Build muscle / strength") !== -1) score += 2;
+    if (a === "Running" && eventName && /run|marathon|mile|5k|10k/i.test(eventName)) score += 3;
+    if (a === "Swimming" && eventName && /swim|triathlon/i.test(eventName)) score += 3;
+    return { activity: a, score: score };
+  });
+
+  priorities.sort((a, b) => b.score - a.score);
+
+  const counts = {};
+  priorities.forEach((p) => {
+    counts[p.activity] = 0;
+  });
+
+  let remaining = total;
+  let idx = 0;
+  let guard = 0;
+  while (remaining > 0 && priorities.length > 0 && guard < 500) {
+    const p = priorities[idx % priorities.length];
+    counts[p.activity] += 1;
+    remaining -= 1;
+    idx += 1;
+    guard += 1;
+  }
+
+  const items = priorities
+    .map((p) => ({ activity: p.activity, perWeek: counts[p.activity] }))
+    .filter((it) => it.perWeek > 0);
+  return { total: total, items: items };
 }
 
 function chipStyle(active) {
@@ -482,6 +563,31 @@ function applyButtonStyle() {
     borderRadius: 8,
     fontSize: 13,
     marginTop: 8,
+    cursor: "pointer",
+  };
+}
+
+function sectionHeaderStyle() {
+  return { fontSize: 15, fontWeight: 700, color: "#111", margin: "0 0 12px" };
+}
+function moduleResultBoxStyle(color) {
+  return { background: "#f9f9f9", borderLeft: "4px solid " + color, borderRadius: 10, padding: 16, marginBottom: 16 };
+}
+function moduleResultTitleStyle() {
+  return { fontWeight: 600, fontSize: 14, marginBottom: 10 };
+}
+function unitToggleStyle() {
+  return { fontSize: 12, color: "#2563eb", textDecoration: "underline", cursor: "pointer" };
+}
+function stepperBtnStyle() {
+  return {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    border: "1px solid #ddd",
+    background: "#fff",
+    fontSize: 16,
+    lineHeight: "1",
     cursor: "pointer",
   };
 }
@@ -563,12 +669,144 @@ function ContinueButton({ onClick, label }) {
   );
 }
 
+function WeightInputs({ currentWeight, setCurrentWeight, goalWeight, setGoalWeight, weightUnit, toggleWeightUnit }) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={fieldCaptionStyle()}>Weight</div>
+        <span onClick={toggleWeightUnit} style={unitToggleStyle()}>
+          {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
+        </span>
+      </div>
+      <input
+        type="text"
+        placeholder={"Current weight (" + weightUnit + ")"}
+        value={currentWeight}
+        onChange={(e) => setCurrentWeight(e.target.value)}
+        style={textInputStyle()}
+      />
+      <input
+        type="text"
+        placeholder={"Goal weight (" + weightUnit + ")"}
+        value={goalWeight}
+        onChange={(e) => setGoalWeight(e.target.value)}
+        style={textInputStyle()}
+      />
+    </div>
+  );
+}
+
+function HeightInputs({ heightUnit, toggleHeightUnit, heightFeet, setHeightFeet, heightInches, setHeightInches, heightCm, setHeightCm }) {
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+        <div style={fieldCaptionStyle()}>Height</div>
+        <span onClick={toggleHeightUnit} style={unitToggleStyle()}>
+          {heightUnit === "ftin" ? "Switch to cm" : "Switch to ft/in"}
+        </span>
+      </div>
+      {heightUnit === "ftin" ? (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            type="text"
+            placeholder="Feet"
+            value={heightFeet}
+            onChange={(e) => setHeightFeet(e.target.value)}
+            style={{ ...textInputStyle(), flex: 1, marginBottom: 0 }}
+          />
+          <input
+            type="text"
+            placeholder="Inches"
+            value={heightInches}
+            onChange={(e) => setHeightInches(e.target.value)}
+            style={{ ...textInputStyle(), flex: 1, marginBottom: 0 }}
+          />
+        </div>
+      ) : (
+        <input
+          type="text"
+          placeholder="Height (cm)"
+          value={heightCm}
+          onChange={(e) => setHeightCm(e.target.value)}
+          style={{ ...textInputStyle(), marginBottom: 12 }}
+        />
+      )}
+    </div>
+  );
+}
+
+function GoalTimeline({ points, color }) {
+  const lastPct = points.length > 0 ? points[points.length - 1].pct : 100;
+  return (
+    <div style={{ position: "relative", height: 56, margin: "12px 0 44px" }}>
+      <div style={{ position: "absolute", top: 8, left: 0, right: 0, height: 4, background: "#e5e7eb", borderRadius: 2 }} />
+      <div style={{ position: "absolute", top: 8, left: 0, height: 4, width: lastPct + "%", background: color, borderRadius: 2 }} />
+      {points.map((p, i) => (
+        <div
+          key={i}
+          style={{
+            position: "absolute",
+            top: 0,
+            left: p.pct + "%",
+            transform: "translateX(-50%)",
+            textAlign: "center",
+            width: 110,
+          }}
+        >
+          <div
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: color,
+              margin: "0 auto 6px",
+              border: "2px solid #fff",
+              boxShadow: "0 0 0 1px " + color,
+            }}
+          />
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#333" }}>{p.label}</div>
+          {p.sub && <div style={{ fontSize: 10, color: "#888" }}>{p.sub}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function Stepper({ label, value, onChange }) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "8px 12px",
+        background: "#fff",
+        border: "1px solid #eee",
+        borderRadius: 8,
+        marginBottom: 6,
+      }}
+    >
+      <div style={{ fontSize: 13, color: "#333" }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button onClick={() => onChange(Math.max(0, value - 1))} style={stepperBtnStyle()}>
+          −
+        </button>
+        <div style={{ fontSize: 14, fontWeight: 600, width: 20, textAlign: "center" }}>{value}</div>
+        <button onClick={() => onChange(value + 1)} style={stepperBtnStyle()}>
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Onboarding() {
   const [step, setStep] = useState("goals");
 
   const [goals, setGoals] = useState([]);
   const [otherGoalText, setOtherGoalText] = useState("");
   const [notes, setNotes] = useState("");
+  const [weightUnit, setWeightUnit] = useState("lb");
   const [currentWeight, setCurrentWeight] = useState("");
   const [goalWeight, setGoalWeight] = useState("");
   const [weightGoalDate, setWeightGoalDate] = useState("");
@@ -587,6 +825,8 @@ export default function Onboarding() {
 
   const [activities, setActivities] = useState([]);
   const [otherActivityText, setOtherActivityText] = useState("");
+  const [schedulePref, setSchedulePref] = useState("");
+  const [exerciseBreakdownOverride, setExerciseBreakdownOverride] = useState(null);
 
   const [access, setAccess] = useState([]);
   const [otherAccessText, setOtherAccessText] = useState("");
@@ -608,6 +848,9 @@ export default function Onboarding() {
 
   const [age, setAge] = useState("");
   const [sex, setSex] = useState("");
+  const [heightUnit, setHeightUnit] = useState("ftin");
+  const [heightFeet, setHeightFeet] = useState("");
+  const [heightInches, setHeightInches] = useState("");
   const [heightCm, setHeightCm] = useState("");
   const [activityLevel, setActivityLevel] = useState("");
   const [dietary, setDietary] = useState([]);
@@ -649,8 +892,40 @@ export default function Onboarding() {
     setSimpleGoalDates((prev) => ({ ...prev, [g]: val }));
   }
 
+  function toggleWeightUnit() {
+    const nextUnit = weightUnit === "lb" ? "kg" : "lb";
+    const convert = (valStr) => {
+      const v = parseFloat(valStr);
+      if (!v) return valStr;
+      const converted = weightUnit === "lb" ? lbToKg(v) : kgToLb(v);
+      return String(Math.round(converted * 10) / 10);
+    };
+    setCurrentWeight((v) => convert(v));
+    setGoalWeight((v) => convert(v));
+    setWeightUnit(nextUnit);
+  }
+
+  function toggleHeightUnit() {
+    const nextUnit = heightUnit === "ftin" ? "cm" : "ftin";
+    if (heightUnit === "ftin") {
+      const ft = parseFloat(heightFeet) || 0;
+      const inch = parseFloat(heightInches) || 0;
+      if (ft || inch) {
+        setHeightCm(String(Math.round(ftInToCm(ft, inch))));
+      }
+    } else {
+      const cm = parseFloat(heightCm) || 0;
+      if (cm) {
+        const conv = cmToFtIn(cm);
+        setHeightFeet(String(conv.ft));
+        setHeightInches(String(conv.inch));
+      }
+    }
+    setHeightUnit(nextUnit);
+  }
+
   function goNext() {
-    setStep(nextStep(step, modules));
+    setStep(nextStep(step, modules, goals));
   }
   function skipOnboarding() {
     setStep("done");
@@ -674,20 +949,39 @@ export default function Onboarding() {
 
   const showSkip = SKIPPABLE_STEPS.includes(step);
 
-  const suggestion = computeSuggestedTargets({
+  const simpleGoalsSelected = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
+
+  const heightCmCanonical =
+    heightUnit === "cm"
+      ? parseFloat(heightCm) || null
+      : (parseFloat(heightFeet) || 0) || (parseFloat(heightInches) || 0)
+      ? ftInToCm(parseFloat(heightFeet) || 0, parseFloat(heightInches) || 0)
+      : null;
+
+  const nutritionSuggestion = computeSuggestedTargets({
     age,
     sex,
-    weightKg: currentWeight,
-    goalWeightKg: goalWeight,
-    heightCm,
+    weightKg: getWeightKg(currentWeight, weightUnit),
+    goalWeightKg: getWeightKg(goalWeight, weightUnit),
+    heightCm: heightCmCanonical,
     activityKey: activityLevel,
     goals,
   });
 
-  const simpleGoalsSelected = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
+  const baseBreakdown = buildExerciseBreakdown({ activities, desiredFreq, goals, eventName });
+  const breakdownMap =
+    exerciseBreakdownOverride ||
+    (baseBreakdown ? Object.fromEntries(baseBreakdown.items.map((it) => [it.activity, it.perWeek])) : null);
+  const exerciseItems = breakdownMap ? activities.map((a) => ({ activity: a, count: breakdownMap[a] || 0 })) : [];
+  const exerciseTotal = exerciseItems.reduce((sum, it) => sum + it.count, 0);
+
+  function updateExerciseCount(activity, value) {
+    const base = breakdownMap || {};
+    setExerciseBreakdownOverride({ ...base, [activity]: Math.max(0, value) });
+  }
 
   const planCards = [
-    buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }),
+    buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, weightUnit }),
     buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq }),
     buildMuscleNote({ goals, muscleTarget, muscleGoalDate }),
     ...buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }),
@@ -728,23 +1022,79 @@ export default function Onboarding() {
             onOtherChange={setOtherGoalText}
             otherPlaceholder="What's your goal?"
           />
+          <input
+            type="text"
+            placeholder="Anything else? (optional)"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            style={{ ...textInputStyle(), marginTop: 16, marginBottom: 24 }}
+          />
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "modules" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>What do you want help with?</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            Turn off anything you don't need. Everything here can be changed later too.
+          </p>
+          {MODULES.map((m) => (
+            <div
+              key={m.key}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                padding: "14px 16px",
+                background: "#f5f5f5",
+                borderRadius: 10,
+                borderLeft: "4px solid " + m.color,
+                marginBottom: 16,
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 500 }}>{m.label}</div>
+                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>{m.desc}</div>
+              </div>
+              <button
+                onClick={() => toggleModule(m.key)}
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: 999,
+                  border: "none",
+                  background: modules[m.key] ? "#dcfce7" : "#eee",
+                  color: modules[m.key] ? "#166534" : "#888",
+                  fontSize: 13,
+                  flexShrink: 0,
+                }}
+              >
+                {modules[m.key] ? "On" : "Off"}
+              </button>
+            </div>
+          ))}
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "goaldetails" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>A few specifics</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            Based on the goals you picked. All optional — skip anything you'd rather fill in later.
+          </p>
 
           {goals.includes("Lose weight") && (
             <div style={sectionBoxStyle()}>
               <div style={sectionLabelStyle()}>Weight goal</div>
-              <input
-                type="text"
-                placeholder="Current weight (kg)"
-                value={currentWeight}
-                onChange={(e) => setCurrentWeight(e.target.value)}
-                style={textInputStyle()}
-              />
-              <input
-                type="text"
-                placeholder="Goal weight (kg)"
-                value={goalWeight}
-                onChange={(e) => setGoalWeight(e.target.value)}
-                style={textInputStyle()}
+              <WeightInputs
+                currentWeight={currentWeight}
+                setCurrentWeight={setCurrentWeight}
+                goalWeight={goalWeight}
+                setGoalWeight={setGoalWeight}
+                weightUnit={weightUnit}
+                toggleWeightUnit={toggleWeightUnit}
               />
               <div style={fieldCaptionStyle()}>Target date</div>
               <input
@@ -826,82 +1176,7 @@ export default function Onboarding() {
             </div>
           )}
 
-          <input
-            type="text"
-            placeholder="Anything else? (optional)"
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            style={{ ...textInputStyle(), marginTop: 16, marginBottom: 24 }}
-          />
           <ContinueButton onClick={goNext} />
-        </div>
-      )}
-
-      {step === "modules" && (
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>What do you want help with?</h1>
-          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            Turn off anything you don't need. Everything here can be changed later too.
-          </p>
-          {MODULES.map((m) => (
-            <div
-              key={m.key}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                padding: "14px 16px",
-                background: "#f5f5f5",
-                borderRadius: 10,
-                borderLeft: "4px solid " + m.color,
-                marginBottom: 16,
-                gap: 12,
-              }}
-            >
-              <div>
-                <div style={{ fontWeight: 500 }}>{m.label}</div>
-                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>{m.desc}</div>
-              </div>
-              <button
-                onClick={() => toggleModule(m.key)}
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: 999,
-                  border: "none",
-                  background: modules[m.key] ? "#dcfce7" : "#eee",
-                  color: modules[m.key] ? "#166534" : "#888",
-                  fontSize: 13,
-                  flexShrink: 0,
-                }}
-              >
-                {modules[m.key] ? "On" : "Off"}
-              </button>
-            </div>
-          ))}
-          <ContinueButton onClick={goNext} />
-        </div>
-      )}
-
-      {step === "personalize" && (
-        <div style={{ textAlign: "center", paddingTop: 24 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Want to personalize further?</h1>
-          <p style={{ color: "#666", fontSize: 14, margin: "12px 0 24px" }}>
-            A few more questions about training and food help us tailor things immediately. Takes
-            about 3 minutes. You can always fill this in later.
-          </p>
-          <ContinueButton onClick={goNext} label="Continue" />
-          <div
-            onClick={skipOnboarding}
-            style={{
-              fontSize: 13,
-              color: "#888",
-              textDecoration: "underline",
-              cursor: "pointer",
-              marginTop: 16,
-            }}
-          >
-            Skip for now
-          </div>
         </div>
       )}
 
@@ -930,6 +1205,15 @@ export default function Onboarding() {
             onOtherChange={setOtherActivityText}
             otherPlaceholder="What other activity?"
           />
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "schedulepref" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>How do you want your training scheduled?</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>You can change this later.</p>
+          <SingleChoiceCards options={SCHEDULE_PREF_OPTIONS} selected={schedulePref} onSelect={setSchedulePref} />
           <ContinueButton onClick={goNext} />
         </div>
       )}
@@ -1031,26 +1315,20 @@ export default function Onboarding() {
 
       {step === "nutrition" && (
         <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Let's set up nutrition targets</h1>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Let's set up nutrition info</h1>
           <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            This helps us suggest daily calorie and macro targets. Everything below is editable.
+            This helps us suggest daily calorie and macro targets on your results page.
           </p>
 
           <div style={sectionBoxStyle()}>
             <div style={sectionLabelStyle()}>About you</div>
-            <input
-              type="text"
-              placeholder="Current weight (kg)"
-              value={currentWeight}
-              onChange={(e) => setCurrentWeight(e.target.value)}
-              style={textInputStyle()}
-            />
-            <input
-              type="text"
-              placeholder="Goal weight (kg, optional)"
-              value={goalWeight}
-              onChange={(e) => setGoalWeight(e.target.value)}
-              style={textInputStyle()}
+            <WeightInputs
+              currentWeight={currentWeight}
+              setCurrentWeight={setCurrentWeight}
+              goalWeight={goalWeight}
+              setGoalWeight={setGoalWeight}
+              weightUnit={weightUnit}
+              toggleWeightUnit={toggleWeightUnit}
             />
             <input
               type="text"
@@ -1069,12 +1347,15 @@ export default function Onboarding() {
                 </span>
               ))}
             </div>
-            <input
-              type="text"
-              placeholder="Height (cm)"
-              value={heightCm}
-              onChange={(e) => setHeightCm(e.target.value)}
-              style={{ ...textInputStyle(), marginBottom: 0 }}
+            <HeightInputs
+              heightUnit={heightUnit}
+              toggleHeightUnit={toggleHeightUnit}
+              heightFeet={heightFeet}
+              setHeightFeet={setHeightFeet}
+              heightInches={heightInches}
+              setHeightInches={setHeightInches}
+              heightCm={heightCm}
+              setHeightCm={setHeightCm}
             />
           </div>
 
@@ -1095,56 +1376,6 @@ export default function Onboarding() {
 
           <p style={{ color: "#666", fontSize: 14, margin: "16px 0 8px" }}>How do you usually eat?</p>
           <SingleChoiceCards options={EATING_PATTERN_OPTIONS} selected={eatingPattern} onSelect={setEatingPattern} />
-
-          {suggestion ? (
-            <div style={sectionBoxStyle()}>
-              <div style={sectionLabelStyle()}>Suggested daily targets</div>
-              <p style={{ fontSize: 12, color: "#777", marginTop: -4, marginBottom: 12 }}>
-                A general estimate based on what you shared above — not medical advice. Edit any
-                number, or reset below.
-              </p>
-              <input
-                type="number"
-                placeholder="Calories"
-                value={targetCalories !== "" ? targetCalories : String(suggestion.calories)}
-                onChange={(e) => setTargetCalories(e.target.value)}
-                style={textInputStyle()}
-              />
-              <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  type="number"
-                  placeholder="Protein (g)"
-                  value={targetProtein !== "" ? targetProtein : String(suggestion.protein)}
-                  onChange={(e) => setTargetProtein(e.target.value)}
-                  style={{ ...textInputStyle(), flex: 1 }}
-                />
-                <input
-                  type="number"
-                  placeholder="Carbs (g)"
-                  value={targetCarbs !== "" ? targetCarbs : String(suggestion.carbs)}
-                  onChange={(e) => setTargetCarbs(e.target.value)}
-                  style={{ ...textInputStyle(), flex: 1 }}
-                />
-                <input
-                  type="number"
-                  placeholder="Fat (g)"
-                  value={targetFat !== "" ? targetFat : String(suggestion.fat)}
-                  onChange={(e) => setTargetFat(e.target.value)}
-                  style={{ ...textInputStyle(), flex: 1, marginBottom: 0 }}
-                />
-              </div>
-              <div
-                onClick={resetTargets}
-                style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 8 }}
-              >
-                Reset to suggested
-              </div>
-            </div>
-          ) : (
-            <p style={{ fontSize: 13, color: "#999", fontStyle: "italic", marginBottom: 16 }}>
-              Add your weight, age, sex, and height above to see suggested targets.
-            </p>
-          )}
 
           <ContinueButton onClick={goNext} />
         </div>
@@ -1169,41 +1400,146 @@ export default function Onboarding() {
       )}
 
       {step === "done" && (
-        <div style={{ paddingTop: 24 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600, textAlign: "center" }}>You're set</h1>
-          <p style={{ color: "#666", fontSize: 14, textAlign: "center", margin: "8px 0 24px" }}>
+        <div style={{ paddingTop: 16 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 600, textAlign: "center" }}>Your Plan</h1>
+          <p style={{ color: "#666", fontSize: 14, textAlign: "center", margin: "8px 0 20px" }}>
             {onModules.length > 0
               ? joinWithAnd(onModules) + (onModules.length > 1 ? " are on. " : " is on. ")
               : "Nothing extra is on. "}
-            Here's how your goals stack up.
+            Here's your timeline, and how the modules get you there.
           </p>
-          {planCards.map((card, i) => (
-            <div
-              key={i}
-              style={{
-                background: card.flag ? "#fff7ed" : "#f0fdf4",
-                border: "1px solid " + (card.flag ? "#fdba74" : "#bbf7d0"),
-                borderRadius: 10,
-                padding: 14,
-                marginBottom: 12,
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{card.title}</div>
-              <div style={{ fontSize: 13, color: "#444" }}>{card.body}</div>
-              {card.flag && card.field && card.recommendedValue && (
-                <button
-                  onClick={() => applyRecommendation(card.field, card.recommendedValue)}
-                  style={applyButtonStyle()}
+
+          {planCards.length > 0 && (
+            <div style={{ marginBottom: 24 }}>
+              <div style={sectionHeaderStyle()}>Your goals timeline</div>
+              {planCards.map((card, i) => (
+                <div
+                  key={i}
+                  style={{
+                    background: card.flag ? "#fff7ed" : "#fff",
+                    border: "1px solid " + (card.flag ? "#fdba74" : "#eee"),
+                    borderRadius: 10,
+                    padding: 14,
+                    marginBottom: 12,
+                  }}
                 >
-                  {card.applyLabel || "Use recommended"}
-                </button>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{card.title}</div>
+                  {card.timeline && <GoalTimeline points={card.timeline.points} color={card.timeline.color} />}
+                  <div style={{ fontSize: 13, color: "#444" }}>{card.body}</div>
+                  {card.flag && card.field && card.recommendedValue && (
+                    <button
+                      onClick={() => applyRecommendation(card.field, card.recommendedValue)}
+                      style={applyButtonStyle()}
+                    >
+                      {card.applyLabel || "Use recommended"}
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={sectionHeaderStyle()}>How we'll get there</div>
+
+          {modules.nutrition && (
+            <div style={moduleResultBoxStyle("#2563eb")}>
+              <div style={moduleResultTitleStyle()}>Nutrition — daily averages</div>
+              {nutritionSuggestion ? (
+                <div>
+                  <p style={{ fontSize: 12, color: "#777", marginBottom: 12 }}>
+                    A general estimate — not medical advice. Edit any number, or reset below.
+                  </p>
+                  <div style={fieldCaptionStyle()}>Calories (kcal)</div>
+                  <input
+                    type="number"
+                    value={targetCalories !== "" ? targetCalories : String(nutritionSuggestion.calories)}
+                    onChange={(e) => setTargetCalories(e.target.value)}
+                    style={textInputStyle()}
+                  />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={fieldCaptionStyle()}>Protein (g)</div>
+                      <input
+                        type="number"
+                        value={targetProtein !== "" ? targetProtein : String(nutritionSuggestion.protein)}
+                        onChange={(e) => setTargetProtein(e.target.value)}
+                        style={textInputStyle()}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={fieldCaptionStyle()}>Carbs (g)</div>
+                      <input
+                        type="number"
+                        value={targetCarbs !== "" ? targetCarbs : String(nutritionSuggestion.carbs)}
+                        onChange={(e) => setTargetCarbs(e.target.value)}
+                        style={textInputStyle()}
+                      />
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={fieldCaptionStyle()}>Fat (g)</div>
+                      <input
+                        type="number"
+                        value={targetFat !== "" ? targetFat : String(nutritionSuggestion.fat)}
+                        onChange={(e) => setTargetFat(e.target.value)}
+                        style={{ ...textInputStyle(), marginBottom: 0 }}
+                      />
+                    </div>
+                  </div>
+                  <div onClick={resetTargets} style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 8 }}>
+                    Reset to suggested
+                  </div>
+                </div>
+              ) : (
+                <p style={{ fontSize: 13, color: "#999", fontStyle: "italic" }}>
+                  Add your weight, age, sex, and height in the nutrition step to see suggested targets.
+                </p>
               )}
             </div>
-          ))}
-          {planCards.length === 0 && (
-            <p style={{ color: "#666", fontSize: 14, textAlign: "center" }}>
-              We'll ask about anything else the first time it matters.
-            </p>
+          )}
+
+          {modules.exercise && (
+            <div style={moduleResultBoxStyle("#16a34a")}>
+              <div style={moduleResultTitleStyle()}>Exercise — weekly breakdown</div>
+              {schedulePref && (
+                <p style={{ fontSize: 12, color: "#777", marginBottom: 8 }}>
+                  {schedulePref === "consistent"
+                    ? "You prefer a consistent weekly schedule."
+                    : "You prefer a varied schedule week to week."}
+                </p>
+              )}
+              {exerciseItems.length > 0 ? (
+                <div>
+                  {exerciseItems.map(({ activity, count }) => (
+                    <Stepper key={activity} label={activity} value={count} onChange={(v) => updateExerciseCount(activity, v)} />
+                  ))}
+                  <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
+                    Total: {exerciseTotal}x/week{desiredFreq ? " (you said " + desiredFreq + ")" : ""}
+                  </div>
+                  <div
+                    onClick={() => setExerciseBreakdownOverride(null)}
+                    style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 8 }}
+                  >
+                    Reset to suggested
+                  </div>
+                </div>
+              ) : (
+                <p style={{ fontSize: 13, color: "#999", fontStyle: "italic" }}>
+                  Pick some activities in the exercise questions to see a suggested weekly breakdown.
+                </p>
+              )}
+            </div>
+          )}
+
+          {modules.mealprep && (
+            <div style={moduleResultBoxStyle("#ea580c")}>
+              <div style={moduleResultTitleStyle()}>Meal-prep</div>
+              <p style={{ fontSize: 13, color: "#444" }}>
+                {cuisines.length > 0 ? "Into " + joinWithAnd(cuisines) + ". " : ""}
+                {cadence
+                  ? "Cooking " + ((CADENCE_OPTIONS.find((c) => c.key === cadence) || {}).label || cadence) + "."
+                  : "No cooking cadence set yet."}
+              </p>
+            </div>
           )}
         </div>
       )}
