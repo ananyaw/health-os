@@ -9,6 +9,7 @@ const GOAL_OPTIONS = [
   "Eat healthier",
   "Reduce stress",
   "Improve endurance",
+  "Improve flexibility",
   "Sleep better",
   "Increase energy",
   "Other",
@@ -49,6 +50,7 @@ const ACTIVITY_OPTIONS = [
   "Rowing",
   "HIIT/Bootcamp",
   "Pilates",
+  "Stretching/Mobility",
   "Other",
 ];
 const BODYWEIGHT_ONLY = "Bodyweight only";
@@ -110,7 +112,7 @@ const DIETARY_OPTIONS = [
 ];
 
 const EATING_PATTERN_OPTIONS = [
-  { key: "2meals", label: "2 meals a day", desc: "Two larger meals, no snacking in between." },
+  { key: "2meals", label: "2 meals a day", desc: "Skip one traditional meal — two larger meals instead." },
   { key: "3meals", label: "3 meals a day", desc: "Standard breakfast, lunch, dinner." },
   { key: "grazing", label: "Grazing / small frequent meals", desc: "Many small meals throughout the day." },
   { key: "if", label: "Intermittent fasting", desc: "Eating window with a fasting period." },
@@ -128,23 +130,20 @@ const ACTIVITY_MULTIPLIERS = { sedentary: 1.2, light: 1.375, moderate: 1.55, ver
 const SCHEDULE_PREF_OPTIONS = [
   { key: "consistent", label: "Consistent weekly schedule", desc: "Same days and activities most weeks — easier to build a habit." },
   { key: "varied", label: "Varied schedule", desc: "Mix it up week to week based on how you're feeling or what's convenient." },
+  { key: "flexible", label: "Flexible / not sure yet", desc: "No strict structure — we'll suggest a mix and you can adjust as you go." },
 ];
 
-const ACTIVITY_PRIORITY_BASE = {
-  Running: 3,
-  Lifting: 3,
-  Swimming: 2,
-  Cycling: 2,
-  Yoga: 1,
-  Hiking: 1,
-  Rowing: 1,
-  "HIIT/Bootcamp": 1,
-  Pilates: 1,
-  Other: 1,
-};
+const DISTANCE_CATEGORIES = [
+  { test: /half.?marathon/i, key: "half", label: "half marathon", floorMinutes: 56, miles: 13.1 },
+  { test: /marathon/i, key: "full", label: "marathon", floorMinutes: 120, miles: 26.2 },
+  { test: /10\s*-?\s*mile/i, key: "10mile", label: "10-mile race", floorMinutes: 43, miles: 10 },
+  { test: /10\s*k/i, key: "10k", label: "10K", floorMinutes: 26, miles: 6.2 },
+  { test: /5\s*k/i, key: "5k", label: "5K", floorMinutes: 12, miles: 3.1 },
+];
 
 const SKIPPABLE_STEPS = [
   "goaldetails",
+  "basics",
   "trainerfreq",
   "activities",
   "schedulepref",
@@ -164,7 +163,7 @@ function joinWithAnd(arr) {
   return arr.slice(0, -1).join(", ") + ", and " + arr[arr.length - 1];
 }
 
-function nextStep(current, modules, goals) {
+function nextStep(current, modules) {
   const hasNutrition = modules.nutrition;
   const hasMealprep = modules.mealprep;
   const hasExercise = modules.exercise;
@@ -183,7 +182,8 @@ function nextStep(current, modules, goals) {
 
   if (current === "goals") return "goaldetails";
   if (current === "goaldetails") return "modules";
-  if (current === "modules") return afterModules();
+  if (current === "modules") return "basics";
+  if (current === "basics") return afterModules();
   if (current === "trainerfreq") return "activities";
   if (current === "activities") return "schedulepref";
   if (current === "schedulepref") return "access";
@@ -292,13 +292,29 @@ function formatDateShort(iso) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+function buildWeightCheckpoints(cur, goal, weeks, weightGoalDate, unitLabel) {
+  const points = [{ label: "Today", sub: cur + unitLabel, pct: 0 }];
+  const fractions = weeks >= 10 ? [0.25, 0.5, 0.75] : weeks >= 5 ? [0.5] : [];
+  fractions.forEach((f, i) => {
+    const w = cur + (goal - cur) * f;
+    const iso = isoDateFromWeeksFromNow(weeks * f);
+    points.push({
+      label: "Check-in " + (i + 1),
+      sub: w.toFixed(1) + unitLabel + " · " + formatDateShort(iso),
+      pct: f * 100,
+    });
+  });
+  points.push({ label: "Goal", sub: goal + unitLabel + " · " + formatDateShort(weightGoalDate), pct: 100 });
+  return points;
+}
+
 function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, weightUnit }) {
   if (!goals.includes("Lose weight")) return null;
   const cur = parseFloat(currentWeight);
   const goal = parseFloat(goalWeight);
   const unitLabel = weightUnit;
   if (!cur || !goal) {
-    return { title: "Weight", body: "Add your current and goal weight to see a suggested pace." };
+    return { title: "Weight", body: "Add your current and goal weight (in the “about you” step) to see a suggested pace." };
   }
 
   const diff = cur - goal;
@@ -327,10 +343,13 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
       recommendedValue: recIso,
       applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
       body:
-        (weeks === null ? "Add a target date for " : "Your target date has passed for ") +
-        cur + unitLabel + " → " + goal + unitLabel +
-        ". At a sustainable pace (~" + midRate.toFixed(2) + unitLabel + "/week), that's about " +
-        Math.round(recWeeks) + " weeks out — around " + formatDate(recIso) + ".",
+        (weeks === null ? "Add a target date to see a full timeline. " : "That target date has already passed. ") +
+        "At a sustainable pace of about " +
+        midRate.toFixed(2) +
+        unitLabel +
+        " per week, " +
+        formatDate(recIso) +
+        " would be a realistic target.",
     };
   }
 
@@ -346,34 +365,71 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
       recommendedValue: recIso,
       applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
       body:
-        cur + unitLabel + " → " + goal + unitLabel + " by " + formatDate(weightGoalDate) +
-        " implies ~" + impliedRate.toFixed(2) + unitLabel + "/week — faster than the generally sustainable range (" +
-        safeMin + "-" + safeMax + unitLabel + "/week). A more realistic target date would be around " +
-        formatDate(recIso) + " (~" + Math.round(recWeeks) + " weeks, " + safeMax + unitLabel + "/week).",
+        "This pace works out to about " +
+        impliedRate.toFixed(2) +
+        unitLabel +
+        " per week, faster than the generally sustainable range of " +
+        safeMin +
+        "–" +
+        safeMax +
+        unitLabel +
+        ". A steadier pace would set you up better long-term — " +
+        formatDate(recIso) +
+        " is a more realistic target.",
     };
   }
 
-  const midIso = isoDateFromWeeksFromNow(weeks / 2);
-  const midWeight = isLoss ? cur - absDiff / 2 : cur + absDiff / 2;
   return {
     title: "Weight",
     flag: false,
-    body:
-      cur + unitLabel + " → " + goal + unitLabel + " by " + formatDate(weightGoalDate) +
-      " works out to ~" + impliedRate.toFixed(2) + unitLabel + "/week — a realistic pace. Halfway point: ~" +
-      midWeight.toFixed(1) + unitLabel + " by " + formatDate(midIso) + ".",
+    body: "About " + impliedRate.toFixed(2) + unitLabel + " per week — a realistic, sustainable pace.",
     timeline: {
       color: "#2563eb",
-      points: [
-        { label: "Today", sub: cur + unitLabel, pct: 0 },
-        { label: "Halfway", sub: midWeight.toFixed(1) + unitLabel + " · " + formatDateShort(midIso), pct: 50 },
-        { label: "Goal", sub: goal + unitLabel + " · " + formatDateShort(weightGoalDate), pct: 100 },
-      ],
+      points: buildWeightCheckpoints(cur, goal, weeks, weightGoalDate, unitLabel),
     },
   };
 }
 
-function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq }) {
+function detectDistanceCategory(eventName) {
+  if (!eventName) return null;
+  for (let i = 0; i < DISTANCE_CATEGORIES.length; i++) {
+    if (DISTANCE_CATEGORIES[i].test.test(eventName)) return DISTANCE_CATEGORIES[i];
+  }
+  return null;
+}
+
+function parseTargetMinutes(goalText) {
+  if (!goalText) return null;
+  const m = goalText.match(/(\d+):(\d{2})/);
+  if (m) return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+  const m2 = goalText.match(/(\d+(\.\d+)?)\s*(?:hour|hr)s?/i);
+  if (m2) return Math.round(parseFloat(m2[1]) * 60);
+  const m3 = goalText.match(/(\d+)\s*min/i);
+  if (m3) return parseInt(m3[1], 10);
+  return null;
+}
+
+function formatMinutes(totalMinutes) {
+  const h = Math.floor(totalMinutes / 60);
+  const m = Math.round(totalMinutes % 60);
+  if (h > 0) return h + "h" + (m > 0 ? " " + m + "m" : "");
+  return m + " min";
+}
+
+function parsePaceToSeconds(paceStr) {
+  if (!paceStr) return null;
+  const m = paceStr.match(/(\d+):(\d{2})/);
+  if (!m) return null;
+  return parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+}
+
+function formatPace(totalSeconds) {
+  const mn = Math.floor(totalSeconds / 60);
+  const s = Math.round(totalSeconds % 60);
+  return mn + ":" + String(s).padStart(2, "0");
+}
+
+function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, milePace }) {
   if (!goals.includes("Train for an event") || !eventName) return null;
   const lowFreq = !currentFreq || currentFreq === "0 days/week" || currentFreq === "1-2 days/week";
   const goalIsFinishOriented = eventGoal && eventGoal.toLowerCase().indexOf("finish") !== -1;
@@ -383,12 +439,30 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
   }
 
   const weeks = weeksBetween(eventDate);
-
   if (weeks === null) {
     return { title: "Event: " + eventName, body: "Add a valid event date to check your timeline." };
   }
   if (weeks <= 0) {
     return { title: "Event: " + eventName, flag: true, body: "That date has already passed — double check it." };
+  }
+
+  const category = detectDistanceCategory(eventName);
+  const targetMinutes = parseTargetMinutes(eventGoal);
+
+  if (category && targetMinutes && targetMinutes < category.floorMinutes) {
+    return {
+      title: "Event: " + eventName,
+      flag: true,
+      field: "eventGoal",
+      recommendedValue: "Just finish comfortably",
+      applyLabel: "Use a more realistic goal",
+      body:
+        "A " +
+        category.label +
+        " in " +
+        formatMinutes(targetMinutes) +
+        " isn't achievable — that's faster than any elite professional has ever run. We'd suggest starting with a finish-focused goal and setting a real pace target once you have a race under your belt.",
+    };
   }
 
   const tight = weeks < 4 && lowFreq;
@@ -401,8 +475,11 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
       recommendedValue: "Just finish comfortably",
       applyLabel: "Use this goal instead",
       body:
-        "Only ~" + Math.round(weeks) + " weeks out, training " + (currentFreq || "rarely") +
-        " — tight to build up safely. We'd recommend treating this one as a “just finish” goal rather than chasing a specific time.",
+        "Only about " +
+        Math.round(weeks) +
+        " weeks out, training " +
+        (currentFreq || "rarely") +
+        " — tight to build up safely. We'd recommend treating this one as a finish-focused goal rather than chasing a specific time.",
     };
   }
 
@@ -410,8 +487,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
     return {
       title: "Event: " + eventName,
       flag: false,
-      body:
-        "~" + Math.round(weeks) + " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
+      body: "About " + Math.round(weeks) + " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
       timeline: {
         color: "#16a34a",
         points: [
@@ -422,12 +498,37 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq })
     };
   }
 
+  const currentPaceSec = parsePaceToSeconds(milePace);
+  if (category && targetMinutes && currentPaceSec && weeks >= 5) {
+    const targetPaceSec = (targetMinutes * 60) / category.miles;
+    const c1 = currentPaceSec - (currentPaceSec - targetPaceSec) * 0.33;
+    const c2 = currentPaceSec - (currentPaceSec - targetPaceSec) * 0.66;
+    return {
+      title: "Event: " + eventName,
+      flag: false,
+      body: "A reasonable runway to bring your pace down toward goal. We'll turn this into a week-by-week plan once your trainer profile is set up.",
+      timeline: {
+        color: "#16a34a",
+        points: [
+          { label: "Today", sub: formatPace(currentPaceSec) + "/mi", pct: 0 },
+          { label: "Check-in 1", sub: formatPace(c1) + "/mi · " + formatDateShort(isoDateFromWeeksFromNow(weeks * 0.33)), pct: 33 },
+          { label: "Check-in 2", sub: formatPace(c2) + "/mi · " + formatDateShort(isoDateFromWeeksFromNow(weeks * 0.66)), pct: 66 },
+          { label: eventName, sub: formatPace(targetPaceSec) + "/mi · " + formatDateShort(eventDate), pct: 100 },
+        ],
+      },
+    };
+  }
+
   return {
     title: "Event: " + eventName,
     flag: false,
     body:
-      "~" + Math.round(weeks) + " weeks until " + eventName + (eventGoal ? " — goal: " + eventGoal : "") +
-      ". Reasonable runway — we'll build the week-by-week plan once your trainer profile is set up.",
+      "About " +
+      Math.round(weeks) +
+      " weeks until " +
+      eventName +
+      (eventGoal ? " — goal: " + eventGoal : "") +
+      ". A reasonable runway — we'll build the week-by-week plan once your trainer profile is set up.",
     timeline: {
       color: "#16a34a",
       points: [
@@ -456,50 +557,68 @@ function buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }) {
   }));
 }
 
-function parseFreqMid(freqStr) {
-  if (!freqStr) return 3;
-  if (freqStr.indexOf("0 days") === 0) return 0;
-  if (freqStr.indexOf("1-2") === 0) return 2;
-  if (freqStr.indexOf("3-4") === 0) return 4;
-  if (freqStr.indexOf("5+") === 0) return 5;
-  return 3;
+function buildExerciseSummary({ activities, otherActivityText, desiredFreq, schedulePref, goals, eventName }) {
+  if (!activities || activities.length === 0) {
+    return "Add some activities you're interested in to see a suggested weekly mix here.";
+  }
+  const activityList = activities.map((a) => (a === "Other" && otherActivityText ? otherActivityText : a));
+  const mixText =
+    activityList.length === 1
+      ? "mostly " + activityList[0].toLowerCase()
+      : "a mix of " + joinWithAnd(activityList.map((a) => a.toLowerCase()));
+
+  const freqText = desiredFreq ? desiredFreq : "a few sessions a week";
+
+  const scheduleText =
+    schedulePref === "consistent"
+      ? "on a consistent weekly schedule"
+      : schedulePref === "varied"
+      ? "varying week to week"
+      : schedulePref === "flexible"
+      ? "kept flexible so you can adjust as you go"
+      : "";
+
+  const goalClause = goals.includes("Train for an event")
+    ? "Since you're training for " + (eventName || "your event") + ", "
+    : goals.includes("Build muscle / strength")
+    ? "Since building muscle and strength is a goal, "
+    : goals.includes("Lose weight")
+    ? "Since weight loss is a goal, "
+    : goals.includes("Improve flexibility")
+    ? "Since improving flexibility is a goal, "
+    : "Based on your preferences, ";
+
+  return (
+    goalClause +
+    "we'll build your training plan around " +
+    freqText +
+    " of " +
+    mixText +
+    (scheduleText ? ", " + scheduleText : "") +
+    ". The exact sessions will adapt over time as we learn what's working for you."
+  );
 }
 
-function buildExerciseBreakdown({ activities, desiredFreq, goals, eventName }) {
-  if (!activities || activities.length === 0) return null;
-  const total = parseFreqMid(desiredFreq);
-  if (total <= 0) return { total: 0, items: [] };
-
-  const priorities = activities.map((a) => {
-    let score = ACTIVITY_PRIORITY_BASE[a] || 1;
-    if (a === "Lifting" && goals.indexOf("Build muscle / strength") !== -1) score += 2;
-    if (a === "Running" && eventName && /run|marathon|mile|5k|10k/i.test(eventName)) score += 3;
-    if (a === "Swimming" && eventName && /swim|triathlon/i.test(eventName)) score += 3;
-    return { activity: a, score: score };
-  });
-
-  priorities.sort((a, b) => b.score - a.score);
-
-  const counts = {};
-  priorities.forEach((p) => {
-    counts[p.activity] = 0;
-  });
-
-  let remaining = total;
-  let idx = 0;
-  let guard = 0;
-  while (remaining > 0 && priorities.length > 0 && guard < 500) {
-    const p = priorities[idx % priorities.length];
-    counts[p.activity] += 1;
-    remaining -= 1;
-    idx += 1;
-    guard += 1;
-  }
-
-  const items = priorities
-    .map((p) => ({ activity: p.activity, perWeek: counts[p.activity] }))
-    .filter((it) => it.perWeek > 0);
-  return { total: total, items: items };
+function buildMealprepSummary({ cuisines, otherCuisineText, cadence, hasNutrition, hasExercise }) {
+  const cuisineList = cuisines
+    .map((c) => (c === "Other" && otherCuisineText ? otherCuisineText : c))
+    .filter((c) => c !== "No preference");
+  const cuisineText = cuisineList.length > 0 ? joinWithAnd(cuisineList) + " recipes" : "recipes matched to your taste";
+  const cadenceLabel = (CADENCE_OPTIONS.find((c) => c.key === cadence) || {}).label;
+  const purposeText = hasNutrition && hasExercise
+    ? "hit your nutrition targets and fuel your training"
+    : hasNutrition
+    ? "hit your nutrition targets"
+    : hasExercise
+    ? "fuel your training"
+    : "eat well without the guesswork";
+  return (
+    "We'll suggest " +
+    cuisineText +
+    " to help you " +
+    purposeText +
+    (cadenceLabel ? ", built around cooking " + cadenceLabel.toLowerCase() + "." : ".")
+  );
 }
 
 function chipStyle(active) {
@@ -578,18 +697,6 @@ function moduleResultTitleStyle() {
 }
 function unitToggleStyle() {
   return { fontSize: 12, color: "#2563eb", textDecoration: "underline", cursor: "pointer" };
-}
-function stepperBtnStyle() {
-  return {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    border: "1px solid #ddd",
-    background: "#fff",
-    fontSize: 16,
-    lineHeight: "1",
-    cursor: "pointer",
-  };
 }
 
 function MultiChips({ options, selected, onToggle }) {
@@ -678,19 +785,21 @@ function WeightInputs({ currentWeight, setCurrentWeight, goalWeight, setGoalWeig
           {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
         </span>
       </div>
+      <div style={fieldCaptionStyle()}>Current weight ({weightUnit})</div>
       <input
         type="text"
-        placeholder={"Current weight (" + weightUnit + ")"}
+        placeholder={weightUnit === "lb" ? "e.g. 160" : "e.g. 73"}
         value={currentWeight}
         onChange={(e) => setCurrentWeight(e.target.value)}
         style={textInputStyle()}
       />
+      <div style={fieldCaptionStyle()}>Goal weight ({weightUnit})</div>
       <input
         type="text"
-        placeholder={"Goal weight (" + weightUnit + ")"}
+        placeholder={weightUnit === "lb" ? "e.g. 145" : "e.g. 66"}
         value={goalWeight}
         onChange={(e) => setGoalWeight(e.target.value)}
-        style={textInputStyle()}
+        style={{ ...textInputStyle(), marginBottom: 0 }}
       />
     </div>
   );
@@ -706,7 +815,7 @@ function HeightInputs({ heightUnit, toggleHeightUnit, heightFeet, setHeightFeet,
         </span>
       </div>
       {heightUnit === "ftin" ? (
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 8, marginBottom: 0 }}>
           <input
             type="text"
             placeholder="Feet"
@@ -728,7 +837,7 @@ function HeightInputs({ heightUnit, toggleHeightUnit, heightFeet, setHeightFeet,
           placeholder="Height (cm)"
           value={heightCm}
           onChange={(e) => setHeightCm(e.target.value)}
-          style={{ ...textInputStyle(), marginBottom: 12 }}
+          style={{ ...textInputStyle(), marginBottom: 0 }}
         />
       )}
     </div>
@@ -772,34 +881,6 @@ function GoalTimeline({ points, color }) {
   );
 }
 
-function Stepper({ label, value, onChange }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        padding: "8px 12px",
-        background: "#fff",
-        border: "1px solid #eee",
-        borderRadius: 8,
-        marginBottom: 6,
-      }}
-    >
-      <div style={{ fontSize: 13, color: "#333" }}>{label}</div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <button onClick={() => onChange(Math.max(0, value - 1))} style={stepperBtnStyle()}>
-          −
-        </button>
-        <div style={{ fontSize: 14, fontWeight: 600, width: 20, textAlign: "center" }}>{value}</div>
-        <button onClick={() => onChange(value + 1)} style={stepperBtnStyle()}>
-          +
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export default function Onboarding() {
   const [step, setStep] = useState("goals");
 
@@ -819,6 +900,13 @@ export default function Onboarding() {
 
   const [modules, setModules] = useState({ nutrition: true, exercise: true, mealprep: true });
 
+  const [age, setAge] = useState("");
+  const [sex, setSex] = useState("");
+  const [heightUnit, setHeightUnit] = useState("ftin");
+  const [heightFeet, setHeightFeet] = useState("");
+  const [heightInches, setHeightInches] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+
   const [currentFreq, setCurrentFreq] = useState("");
   const [desiredFreq, setDesiredFreq] = useState("");
   const [sessionLength, setSessionLength] = useState("");
@@ -826,7 +914,6 @@ export default function Onboarding() {
   const [activities, setActivities] = useState([]);
   const [otherActivityText, setOtherActivityText] = useState("");
   const [schedulePref, setSchedulePref] = useState("");
-  const [exerciseBreakdownOverride, setExerciseBreakdownOverride] = useState(null);
 
   const [access, setAccess] = useState([]);
   const [otherAccessText, setOtherAccessText] = useState("");
@@ -846,12 +933,6 @@ export default function Onboarding() {
   const [otherCuisineText, setOtherCuisineText] = useState("");
   const [cadence, setCadence] = useState("");
 
-  const [age, setAge] = useState("");
-  const [sex, setSex] = useState("");
-  const [heightUnit, setHeightUnit] = useState("ftin");
-  const [heightFeet, setHeightFeet] = useState("");
-  const [heightInches, setHeightInches] = useState("");
-  const [heightCm, setHeightCm] = useState("");
   const [activityLevel, setActivityLevel] = useState("");
   const [dietary, setDietary] = useState([]);
   const [otherDietaryText, setOtherDietaryText] = useState("");
@@ -925,7 +1006,7 @@ export default function Onboarding() {
   }
 
   function goNext() {
-    setStep(nextStep(step, modules, goals));
+    setStep(nextStep(step, modules));
   }
   function skipOnboarding() {
     setStep("done");
@@ -968,21 +1049,9 @@ export default function Onboarding() {
     goals,
   });
 
-  const baseBreakdown = buildExerciseBreakdown({ activities, desiredFreq, goals, eventName });
-  const breakdownMap =
-    exerciseBreakdownOverride ||
-    (baseBreakdown ? Object.fromEntries(baseBreakdown.items.map((it) => [it.activity, it.perWeek])) : null);
-  const exerciseItems = breakdownMap ? activities.map((a) => ({ activity: a, count: breakdownMap[a] || 0 })) : [];
-  const exerciseTotal = exerciseItems.reduce((sum, it) => sum + it.count, 0);
-
-  function updateExerciseCount(activity, value) {
-    const base = breakdownMap || {};
-    setExerciseBreakdownOverride({ ...base, [activity]: Math.max(0, value) });
-  }
-
   const planCards = [
     buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, weightUnit }),
-    buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq }),
+    buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, milePace }),
     buildMuscleNote({ goals, muscleTarget, muscleGoalDate }),
     ...buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }),
   ].filter(Boolean);
@@ -1033,51 +1102,6 @@ export default function Onboarding() {
         </div>
       )}
 
-      {step === "modules" && (
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>What do you want help with?</h1>
-          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            Turn off anything you don't need. Everything here can be changed later too.
-          </p>
-          {MODULES.map((m) => (
-            <div
-              key={m.key}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                padding: "14px 16px",
-                background: "#f5f5f5",
-                borderRadius: 10,
-                borderLeft: "4px solid " + m.color,
-                marginBottom: 16,
-                gap: 12,
-              }}
-            >
-              <div>
-                <div style={{ fontWeight: 500 }}>{m.label}</div>
-                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>{m.desc}</div>
-              </div>
-              <button
-                onClick={() => toggleModule(m.key)}
-                style={{
-                  padding: "4px 12px",
-                  borderRadius: 999,
-                  border: "none",
-                  background: modules[m.key] ? "#dcfce7" : "#eee",
-                  color: modules[m.key] ? "#166534" : "#888",
-                  fontSize: 13,
-                  flexShrink: 0,
-                }}
-              >
-                {modules[m.key] ? "On" : "Off"}
-              </button>
-            </div>
-          ))}
-          <ContinueButton onClick={goNext} />
-        </div>
-      )}
-
       {step === "goaldetails" && (
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>A few specifics</h1>
@@ -1088,14 +1112,6 @@ export default function Onboarding() {
           {goals.includes("Lose weight") && (
             <div style={sectionBoxStyle()}>
               <div style={sectionLabelStyle()}>Weight goal</div>
-              <WeightInputs
-                currentWeight={currentWeight}
-                setCurrentWeight={setCurrentWeight}
-                goalWeight={goalWeight}
-                setGoalWeight={setGoalWeight}
-                weightUnit={weightUnit}
-                toggleWeightUnit={toggleWeightUnit}
-              />
               <div style={fieldCaptionStyle()}>Target date</div>
               <input
                 type="date"
@@ -1103,6 +1119,9 @@ export default function Onboarding() {
                 onChange={(e) => setWeightGoalDate(e.target.value)}
                 style={{ ...textInputStyle(), marginBottom: 0 }}
               />
+              <p style={{ fontSize: 12, color: "#999", marginTop: 8, marginBottom: 0 }}>
+                We'll ask your current and goal weight in the "about you" step next.
+              </p>
             </div>
           )}
 
@@ -1180,6 +1199,100 @@ export default function Onboarding() {
         </div>
       )}
 
+      {step === "modules" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>What do you want help with?</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            Turn off anything you don't need. Everything here can be changed later too.
+          </p>
+          {MODULES.map((m) => (
+            <div
+              key={m.key}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                padding: "14px 16px",
+                background: "#f5f5f5",
+                borderRadius: 10,
+                borderLeft: "4px solid " + m.color,
+                marginBottom: 16,
+                gap: 12,
+              }}
+            >
+              <div>
+                <div style={{ fontWeight: 500 }}>{m.label}</div>
+                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>{m.desc}</div>
+              </div>
+              <button
+                onClick={() => toggleModule(m.key)}
+                style={{
+                  padding: "4px 12px",
+                  borderRadius: 999,
+                  border: "none",
+                  background: modules[m.key] ? "#dcfce7" : "#eee",
+                  color: modules[m.key] ? "#166534" : "#888",
+                  fontSize: 13,
+                  flexShrink: 0,
+                }}
+              >
+                {modules[m.key] ? "On" : "Off"}
+              </button>
+            </div>
+          ))}
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "basics" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>A bit about you</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            Used to personalize your nutrition targets and training — asked once, used everywhere.
+          </p>
+          <div style={sectionBoxStyle()}>
+            <WeightInputs
+              currentWeight={currentWeight}
+              setCurrentWeight={setCurrentWeight}
+              goalWeight={goalWeight}
+              setGoalWeight={setGoalWeight}
+              weightUnit={weightUnit}
+              toggleWeightUnit={toggleWeightUnit}
+            />
+            <div style={{ height: 12 }} />
+            <div style={fieldCaptionStyle()}>Age</div>
+            <input
+              type="text"
+              placeholder="e.g. 34"
+              value={age}
+              onChange={(e) => setAge(e.target.value)}
+              style={textInputStyle()}
+            />
+            <div style={{ fontSize: 13, color: "#666", margin: "4px 0 6px" }}>
+              Sex (used only for the calorie estimate)
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              {["male", "female"].map((s) => (
+                <span key={s} style={chipStyle(sex === s)} onClick={() => setSex(s)}>
+                  {s === "male" ? "Male" : "Female"}
+                </span>
+              ))}
+            </div>
+            <HeightInputs
+              heightUnit={heightUnit}
+              toggleHeightUnit={toggleHeightUnit}
+              heightFeet={heightFeet}
+              setHeightFeet={setHeightFeet}
+              heightInches={heightInches}
+              setHeightInches={setHeightInches}
+              heightCm={heightCm}
+              setHeightCm={setHeightCm}
+            />
+          </div>
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
       {step === "trainerfreq" && (
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>How do you train today?</h1>
@@ -1196,7 +1309,7 @@ export default function Onboarding() {
       {step === "activities" && (
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>What activities interest you?</h1>
-          <p style={{ color: "#666", fontSize: 14 }}>Pick as many as apply.</p>
+          <p style={{ color: "#666", fontSize: 14 }}>Pick as many as apply — mix and match freely.</p>
           <MultiChipsWithOther
             options={ACTIVITY_OPTIONS}
             selected={activities}
@@ -1317,47 +1430,8 @@ export default function Onboarding() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>Let's set up nutrition info</h1>
           <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            This helps us suggest daily calorie and macro targets on your results page.
+            A couple more preferences to fine-tune your nutrition targets.
           </p>
-
-          <div style={sectionBoxStyle()}>
-            <div style={sectionLabelStyle()}>About you</div>
-            <WeightInputs
-              currentWeight={currentWeight}
-              setCurrentWeight={setCurrentWeight}
-              goalWeight={goalWeight}
-              setGoalWeight={setGoalWeight}
-              weightUnit={weightUnit}
-              toggleWeightUnit={toggleWeightUnit}
-            />
-            <input
-              type="text"
-              placeholder="Age"
-              value={age}
-              onChange={(e) => setAge(e.target.value)}
-              style={textInputStyle()}
-            />
-            <div style={{ fontSize: 13, color: "#666", margin: "4px 0 6px" }}>
-              Sex (used only for the calorie estimate)
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              {["male", "female"].map((s) => (
-                <span key={s} style={chipStyle(sex === s)} onClick={() => setSex(s)}>
-                  {s === "male" ? "Male" : "Female"}
-                </span>
-              ))}
-            </div>
-            <HeightInputs
-              heightUnit={heightUnit}
-              toggleHeightUnit={toggleHeightUnit}
-              heightFeet={heightFeet}
-              setHeightFeet={setHeightFeet}
-              heightInches={heightInches}
-              setHeightInches={setHeightInches}
-              heightCm={heightCm}
-              setHeightCm={setHeightCm}
-            />
-          </div>
 
           <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>
             How active are you day to day (outside of workouts)?
@@ -1425,7 +1499,7 @@ export default function Onboarding() {
                 >
                   <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{card.title}</div>
                   {card.timeline && <GoalTimeline points={card.timeline.points} color={card.timeline.color} />}
-                  <div style={{ fontSize: 13, color: "#444" }}>{card.body}</div>
+                  <div style={{ fontSize: 13, color: "#444", lineHeight: 1.5 }}>{card.body}</div>
                   {card.flag && card.field && card.recommendedValue && (
                     <button
                       onClick={() => applyRecommendation(card.field, card.recommendedValue)}
@@ -1491,7 +1565,7 @@ export default function Onboarding() {
                 </div>
               ) : (
                 <p style={{ fontSize: 13, color: "#999", fontStyle: "italic" }}>
-                  Add your weight, age, sex, and height in the nutrition step to see suggested targets.
+                  Add your weight, age, sex, and height in the "about you" step to see suggested targets.
                 </p>
               )}
             </div>
@@ -1499,45 +1573,18 @@ export default function Onboarding() {
 
           {modules.exercise && (
             <div style={moduleResultBoxStyle("#16a34a")}>
-              <div style={moduleResultTitleStyle()}>Exercise — weekly breakdown</div>
-              {schedulePref && (
-                <p style={{ fontSize: 12, color: "#777", marginBottom: 8 }}>
-                  {schedulePref === "consistent"
-                    ? "You prefer a consistent weekly schedule."
-                    : "You prefer a varied schedule week to week."}
-                </p>
-              )}
-              {exerciseItems.length > 0 ? (
-                <div>
-                  {exerciseItems.map(({ activity, count }) => (
-                    <Stepper key={activity} label={activity} value={count} onChange={(v) => updateExerciseCount(activity, v)} />
-                  ))}
-                  <div style={{ fontSize: 12, color: "#777", marginTop: 8 }}>
-                    Total: {exerciseTotal}x/week{desiredFreq ? " (you said " + desiredFreq + ")" : ""}
-                  </div>
-                  <div
-                    onClick={() => setExerciseBreakdownOverride(null)}
-                    style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 8 }}
-                  >
-                    Reset to suggested
-                  </div>
-                </div>
-              ) : (
-                <p style={{ fontSize: 13, color: "#999", fontStyle: "italic" }}>
-                  Pick some activities in the exercise questions to see a suggested weekly breakdown.
-                </p>
-              )}
+              <div style={moduleResultTitleStyle()}>Exercise</div>
+              <p style={{ fontSize: 13, color: "#444", lineHeight: 1.5 }}>
+                {buildExerciseSummary({ activities, otherActivityText, desiredFreq, schedulePref, goals, eventName })}
+              </p>
             </div>
           )}
 
           {modules.mealprep && (
             <div style={moduleResultBoxStyle("#ea580c")}>
               <div style={moduleResultTitleStyle()}>Meal-prep</div>
-              <p style={{ fontSize: 13, color: "#444" }}>
-                {cuisines.length > 0 ? "Into " + joinWithAnd(cuisines) + ". " : ""}
-                {cadence
-                  ? "Cooking " + ((CADENCE_OPTIONS.find((c) => c.key === cadence) || {}).label || cadence) + "."
-                  : "No cooking cadence set yet."}
+              <p style={{ fontSize: 13, color: "#444", lineHeight: 1.5 }}>
+                {buildMealprepSummary({ cuisines, otherCuisineText, cadence, hasNutrition: modules.nutrition, hasExercise: modules.exercise })}
               </p>
             </div>
           )}
