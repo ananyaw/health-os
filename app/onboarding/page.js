@@ -15,8 +15,6 @@ const GOAL_OPTIONS = [
   "Other",
 ];
 
-const NON_DATED_GOALS = ["Lose weight", "Build muscle / strength", "Train for an event"];
-
 const MODULES = [
   {
     key: "nutrition",
@@ -142,8 +140,8 @@ const DISTANCE_CATEGORIES = [
 ];
 
 const SKIPPABLE_STEPS = [
-  "goaldetails",
   "basics",
+  "goaldetails",
   "trainerfreq",
   "activities",
   "schedulepref",
@@ -163,10 +161,12 @@ function joinWithAnd(arr) {
   return arr.slice(0, -1).join(", ") + ", and " + arr[arr.length - 1];
 }
 
-function nextStep(current, modules) {
+function nextStep(current, modules, goals) {
   const hasNutrition = modules.nutrition;
   const hasMealprep = modules.mealprep;
   const hasExercise = modules.exercise;
+  const hasGoalDetails =
+    goals.includes("Lose weight") || goals.includes("Build muscle / strength") || goals.includes("Train for an event");
 
   function afterModules() {
     if (hasExercise) return "trainerfreq";
@@ -180,10 +180,10 @@ function nextStep(current, modules) {
     return "done";
   }
 
-  if (current === "goals") return "goaldetails";
+  if (current === "goals") return "basics";
+  if (current === "basics") return hasGoalDetails ? "goaldetails" : "modules";
   if (current === "goaldetails") return "modules";
-  if (current === "modules") return "basics";
-  if (current === "basics") return afterModules();
+  if (current === "modules") return afterModules();
   if (current === "trainerfreq") return "activities";
   if (current === "activities") return "schedulepref";
   if (current === "schedulepref") return "access";
@@ -195,6 +195,15 @@ function nextStep(current, modules) {
   if (current === "nutrition") return hasMealprep ? "mealprep" : "done";
   if (current === "mealprep") return "done";
   return "done";
+}
+
+function inferActivityLevelFromFreq(freqStr) {
+  if (!freqStr) return null;
+  if (freqStr.indexOf("0 days") === 0) return "sedentary";
+  if (freqStr.indexOf("1-2") === 0) return "light";
+  if (freqStr.indexOf("3-4") === 0) return "moderate";
+  if (freqStr.indexOf("5+") === 0) return "very";
+  return null;
 }
 
 function lbToKg(lb) {
@@ -313,8 +322,9 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
   const cur = parseFloat(currentWeight);
   const goal = parseFloat(goalWeight);
   const unitLabel = weightUnit;
+
   if (!cur || !goal) {
-    return { title: "Weight", body: "Add your current and goal weight (in the “about you” step) to see a suggested pace." };
+    return { title: "Weight", type: "weight", body: "Add a goal weight and target date above to see your pace." };
   }
 
   const diff = cur - goal;
@@ -323,7 +333,7 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
 
   const negligible = weightUnit === "kg" ? 0.5 : 1;
   if (absDiff < negligible) {
-    return { title: "Weight", body: "Your current and goal weight are basically the same — nothing to plan here." };
+    return { title: "Weight", type: "weight", body: "Your current and goal weight are basically the same — nothing to plan here." };
   }
 
   const isMetric = weightUnit === "kg";
@@ -338,12 +348,13 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
     const recIso = isoDateFromWeeksFromNow(recWeeks);
     return {
       title: "Weight",
+      type: "weight",
       flag: true,
       field: "weightGoalDate",
       recommendedValue: recIso,
       applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
       body:
-        (weeks === null ? "Add a target date to see a full timeline. " : "That target date has already passed. ") +
+        (weeks === null ? "Add a target date above to see a full timeline. " : "That target date has already passed. ") +
         "At a sustainable pace of about " +
         midRate.toFixed(2) +
         unitLabel +
@@ -360,6 +371,7 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
     const recIso = isoDateFromWeeksFromNow(recWeeks);
     return {
       title: "Weight",
+      type: "weight",
       flag: true,
       field: "weightGoalDate",
       recommendedValue: recIso,
@@ -381,6 +393,7 @@ function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, wei
 
   return {
     title: "Weight",
+    type: "weight",
     flag: false,
     body: "About " + impliedRate.toFixed(2) + unitLabel + " per week — a realistic, sustainable pace.",
     timeline: {
@@ -435,15 +448,15 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
   const goalIsFinishOriented = eventGoal && eventGoal.toLowerCase().indexOf("finish") !== -1;
 
   if (!eventDate) {
-    return { title: "Event: " + eventName, body: "Add an event date so we can check whether your timeline is realistic." };
+    return { title: "Event: " + eventName, type: "event", body: "Add an event date above so we can check whether your timeline is realistic." };
   }
 
   const weeks = weeksBetween(eventDate);
   if (weeks === null) {
-    return { title: "Event: " + eventName, body: "Add a valid event date to check your timeline." };
+    return { title: "Event: " + eventName, type: "event", body: "Add a valid event date above to check your timeline." };
   }
   if (weeks <= 0) {
-    return { title: "Event: " + eventName, flag: true, body: "That date has already passed — double check it." };
+    return { title: "Event: " + eventName, type: "event", flag: true, body: "That date has already passed — double check it." };
   }
 
   const category = detectDistanceCategory(eventName);
@@ -452,6 +465,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
   if (category && targetMinutes && targetMinutes < category.floorMinutes) {
     return {
       title: "Event: " + eventName,
+      type: "event",
       flag: true,
       field: "eventGoal",
       recommendedValue: "Just finish comfortably",
@@ -470,6 +484,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
   if (tight && !goalIsFinishOriented) {
     return {
       title: "Event: " + eventName,
+      type: "event",
       flag: true,
       field: "eventGoal",
       recommendedValue: "Just finish comfortably",
@@ -486,6 +501,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
   if (tight && goalIsFinishOriented) {
     return {
       title: "Event: " + eventName,
+      type: "event",
       flag: false,
       body: "About " + Math.round(weeks) + " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
       timeline: {
@@ -505,6 +521,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
     const c2 = currentPaceSec - (currentPaceSec - targetPaceSec) * 0.66;
     return {
       title: "Event: " + eventName,
+      type: "event",
       flag: false,
       body: "A reasonable runway to bring your pace down toward goal. We'll turn this into a week-by-week plan once your trainer profile is set up.",
       timeline: {
@@ -521,6 +538,7 @@ function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, m
 
   return {
     title: "Event: " + eventName,
+    type: "event",
     flag: false,
     body:
       "About " +
@@ -543,18 +561,11 @@ function buildMuscleNote({ goals, muscleTarget, muscleGoalDate }) {
   if (!goals.includes("Build muscle / strength")) return null;
   return {
     title: "Muscle / strength",
+    type: "muscle",
     body: muscleTarget
       ? "Target: " + muscleTarget + (muscleGoalDate ? " by " + formatDate(muscleGoalDate) : "") + ". We'll track progress once training starts."
-      : "No specific target set — we'll suggest one once training starts.",
+      : "Add a specific target above, or leave it blank and we'll suggest one once training starts.",
   };
-}
-
-function buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }) {
-  const simple = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
-  return simple.map((g) => ({
-    title: g === "Other" && otherGoalText ? otherGoalText : g,
-    body: simpleGoalDates[g] ? "Check-in by " + formatDate(simpleGoalDates[g]) + "." : "No check-in date set — that's fine, we'll follow up naturally.",
-  }));
 }
 
 function buildExerciseSummary({ activities, otherActivityText, desiredFreq, schedulePref, goals, eventName }) {
@@ -776,35 +787,6 @@ function ContinueButton({ onClick, label }) {
   );
 }
 
-function WeightInputs({ currentWeight, setCurrentWeight, goalWeight, setGoalWeight, weightUnit, toggleWeightUnit }) {
-  return (
-    <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-        <div style={fieldCaptionStyle()}>Weight</div>
-        <span onClick={toggleWeightUnit} style={unitToggleStyle()}>
-          {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
-        </span>
-      </div>
-      <div style={fieldCaptionStyle()}>Current weight ({weightUnit})</div>
-      <input
-        type="text"
-        placeholder={weightUnit === "lb" ? "e.g. 160" : "e.g. 73"}
-        value={currentWeight}
-        onChange={(e) => setCurrentWeight(e.target.value)}
-        style={textInputStyle()}
-      />
-      <div style={fieldCaptionStyle()}>Goal weight ({weightUnit})</div>
-      <input
-        type="text"
-        placeholder={weightUnit === "lb" ? "e.g. 145" : "e.g. 66"}
-        value={goalWeight}
-        onChange={(e) => setGoalWeight(e.target.value)}
-        style={{ ...textInputStyle(), marginBottom: 0 }}
-      />
-    </div>
-  );
-}
-
 function HeightInputs({ heightUnit, toggleHeightUnit, heightFeet, setHeightFeet, heightInches, setHeightInches, heightCm, setHeightCm }) {
   return (
     <div>
@@ -896,7 +878,6 @@ export default function Onboarding() {
   const [eventName, setEventName] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [eventGoal, setEventGoal] = useState("");
-  const [simpleGoalDates, setSimpleGoalDates] = useState({});
 
   const [modules, setModules] = useState({ nutrition: true, exercise: true, mealprep: true });
 
@@ -969,10 +950,6 @@ export default function Onboarding() {
     });
   }
 
-  function setSimpleGoalDate(g, val) {
-    setSimpleGoalDates((prev) => ({ ...prev, [g]: val }));
-  }
-
   function toggleWeightUnit() {
     const nextUnit = weightUnit === "lb" ? "kg" : "lb";
     const convert = (valStr) => {
@@ -1006,7 +983,7 @@ export default function Onboarding() {
   }
 
   function goNext() {
-    setStep(nextStep(step, modules));
+    setStep(nextStep(step, modules, goals));
   }
   function skipOnboarding() {
     setStep("done");
@@ -1030,8 +1007,6 @@ export default function Onboarding() {
 
   const showSkip = SKIPPABLE_STEPS.includes(step);
 
-  const simpleGoalsSelected = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
-
   const heightCmCanonical =
     heightUnit === "cm"
       ? parseFloat(heightCm) || null
@@ -1039,13 +1014,15 @@ export default function Onboarding() {
       ? ftInToCm(parseFloat(heightFeet) || 0, parseFloat(heightInches) || 0)
       : null;
 
+  const effectiveActivityLevel = modules.exercise ? inferActivityLevelFromFreq(desiredFreq) || activityLevel : activityLevel;
+
   const nutritionSuggestion = computeSuggestedTargets({
     age,
     sex,
     weightKg: getWeightKg(currentWeight, weightUnit),
     goalWeightKg: getWeightKg(goalWeight, weightUnit),
     heightCm: heightCmCanonical,
-    activityKey: activityLevel,
+    activityKey: effectiveActivityLevel,
     goals,
   });
 
@@ -1053,7 +1030,6 @@ export default function Onboarding() {
     buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate, weightUnit }),
     buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq, milePace }),
     buildMuscleNote({ goals, muscleTarget, muscleGoalDate }),
-    ...buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }),
   ].filter(Boolean);
 
   return (
@@ -1102,6 +1078,60 @@ export default function Onboarding() {
         </div>
       )}
 
+      {step === "basics" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>A bit about you</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            Used to personalize your nutrition targets and training — asked once, used everywhere.
+          </p>
+          <div style={sectionBoxStyle()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={fieldCaptionStyle()}>Current weight</div>
+              <span onClick={toggleWeightUnit} style={unitToggleStyle()}>
+                {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
+              </span>
+            </div>
+            <input
+              type="text"
+              placeholder={weightUnit === "lb" ? "e.g. 160" : "e.g. 73"}
+              value={currentWeight}
+              onChange={(e) => setCurrentWeight(e.target.value)}
+              style={textInputStyle()}
+            />
+            <div style={{ height: 4 }} />
+            <div style={fieldCaptionStyle()}>Age</div>
+            <input
+              type="text"
+              placeholder="e.g. 34"
+              value={age}
+              onChange={(e) => setAge(e.target.value)}
+              style={textInputStyle()}
+            />
+            <div style={{ fontSize: 13, color: "#666", margin: "4px 0 6px" }}>
+              Sex (used only for the calorie estimate)
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              {["male", "female"].map((s) => (
+                <span key={s} style={chipStyle(sex === s)} onClick={() => setSex(s)}>
+                  {s === "male" ? "Male" : "Female"}
+                </span>
+              ))}
+            </div>
+            <HeightInputs
+              heightUnit={heightUnit}
+              toggleHeightUnit={toggleHeightUnit}
+              heightFeet={heightFeet}
+              setHeightFeet={setHeightFeet}
+              heightInches={heightInches}
+              setHeightInches={setHeightInches}
+              heightCm={heightCm}
+              setHeightCm={setHeightCm}
+            />
+          </div>
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
       {step === "goaldetails" && (
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>A few specifics</h1>
@@ -1112,6 +1142,24 @@ export default function Onboarding() {
           {goals.includes("Lose weight") && (
             <div style={sectionBoxStyle()}>
               <div style={sectionLabelStyle()}>Weight goal</div>
+              {currentWeight && (
+                <p style={{ fontSize: 12, color: "#999", marginTop: 0, marginBottom: 10 }}>
+                  You're currently at {currentWeight}{weightUnit}.
+                </p>
+              )}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={fieldCaptionStyle()}>Goal weight ({weightUnit})</div>
+                <span onClick={toggleWeightUnit} style={unitToggleStyle()}>
+                  {weightUnit === "lb" ? "Switch to kg" : "Switch to lb"}
+                </span>
+              </div>
+              <input
+                type="text"
+                placeholder={weightUnit === "lb" ? "e.g. 145" : "e.g. 66"}
+                value={goalWeight}
+                onChange={(e) => setGoalWeight(e.target.value)}
+                style={textInputStyle()}
+              />
               <div style={fieldCaptionStyle()}>Target date</div>
               <input
                 type="date"
@@ -1119,9 +1167,6 @@ export default function Onboarding() {
                 onChange={(e) => setWeightGoalDate(e.target.value)}
                 style={{ ...textInputStyle(), marginBottom: 0 }}
               />
-              <p style={{ fontSize: 12, color: "#999", marginTop: 8, marginBottom: 0 }}>
-                We'll ask your current and goal weight in the "about you" step next.
-              </p>
             </div>
           )}
 
@@ -1172,29 +1217,6 @@ export default function Onboarding() {
             </div>
           )}
 
-          {simpleGoalsSelected.length > 0 && (
-            <div style={sectionBoxStyle()}>
-              <div style={sectionLabelStyle()}>Check-in dates (optional)</div>
-              <p style={{ fontSize: 12, color: "#777", marginTop: -4, marginBottom: 12 }}>
-                These goals don't have a natural finish line, but a check-in date helps us follow
-                up at the right time.
-              </p>
-              {simpleGoalsSelected.map((g) => (
-                <div key={g} style={{ marginBottom: 10 }}>
-                  <div style={fieldCaptionStyle()}>
-                    {g === "Other" && otherGoalText ? otherGoalText : g}
-                  </div>
-                  <input
-                    type="date"
-                    value={simpleGoalDates[g] || ""}
-                    onChange={(e) => setSimpleGoalDate(g, e.target.value)}
-                    style={{ ...textInputStyle(), marginBottom: 0 }}
-                  />
-                </div>
-              ))}
-            </div>
-          )}
-
           <ContinueButton onClick={goNext} />
         </div>
       )}
@@ -1240,55 +1262,6 @@ export default function Onboarding() {
               </button>
             </div>
           ))}
-          <ContinueButton onClick={goNext} />
-        </div>
-      )}
-
-      {step === "basics" && (
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>A bit about you</h1>
-          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            Used to personalize your nutrition targets and training — asked once, used everywhere.
-          </p>
-          <div style={sectionBoxStyle()}>
-            <WeightInputs
-              currentWeight={currentWeight}
-              setCurrentWeight={setCurrentWeight}
-              goalWeight={goalWeight}
-              setGoalWeight={setGoalWeight}
-              weightUnit={weightUnit}
-              toggleWeightUnit={toggleWeightUnit}
-            />
-            <div style={{ height: 12 }} />
-            <div style={fieldCaptionStyle()}>Age</div>
-            <input
-              type="text"
-              placeholder="e.g. 34"
-              value={age}
-              onChange={(e) => setAge(e.target.value)}
-              style={textInputStyle()}
-            />
-            <div style={{ fontSize: 13, color: "#666", margin: "4px 0 6px" }}>
-              Sex (used only for the calorie estimate)
-            </div>
-            <div style={{ marginBottom: 12 }}>
-              {["male", "female"].map((s) => (
-                <span key={s} style={chipStyle(sex === s)} onClick={() => setSex(s)}>
-                  {s === "male" ? "Male" : "Female"}
-                </span>
-              ))}
-            </div>
-            <HeightInputs
-              heightUnit={heightUnit}
-              toggleHeightUnit={toggleHeightUnit}
-              heightFeet={heightFeet}
-              setHeightFeet={setHeightFeet}
-              heightInches={heightInches}
-              setHeightInches={setHeightInches}
-              heightCm={heightCm}
-              setHeightCm={setHeightCm}
-            />
-          </div>
           <ContinueButton onClick={goNext} />
         </div>
       )}
@@ -1433,10 +1406,18 @@ export default function Onboarding() {
             A couple more preferences to fine-tune your nutrition targets.
           </p>
 
-          <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>
-            How active are you day to day (outside of workouts)?
-          </p>
-          <SingleChoiceCards options={ACTIVITY_LEVEL_OPTIONS} selected={activityLevel} onSelect={setActivityLevel} />
+          {!modules.exercise ? (
+            <div>
+              <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>
+                How active are you day to day (outside of workouts)?
+              </p>
+              <SingleChoiceCards options={ACTIVITY_LEVEL_OPTIONS} selected={activityLevel} onSelect={setActivityLevel} />
+            </div>
+          ) : (
+            <p style={{ fontSize: 12, color: "#999", fontStyle: "italic", marginBottom: 16 }}>
+              We'll estimate your activity level from your training frequency instead of asking again.
+            </p>
+          )}
 
           <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>Any dietary restrictions?</p>
           <MultiChipsWithOther
@@ -1497,7 +1478,77 @@ export default function Onboarding() {
                     marginBottom: 12,
                   }}
                 >
-                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{card.title}</div>
+                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 8 }}>{card.title}</div>
+
+                  {card.type === "weight" && (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Goal weight ({weightUnit})</div>
+                        <input
+                          type="text"
+                          value={goalWeight}
+                          onChange={(e) => setGoalWeight(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Target date</div>
+                        <input
+                          type="date"
+                          value={weightGoalDate}
+                          onChange={(e) => setWeightGoalDate(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {card.type === "event" && (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Event date</div>
+                        <input
+                          type="date"
+                          value={eventDate}
+                          onChange={(e) => setEventDate(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Your goal</div>
+                        <input
+                          type="text"
+                          value={eventGoal}
+                          onChange={(e) => setEventGoal(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {card.type === "muscle" && (
+                    <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Target</div>
+                        <input
+                          type="text"
+                          value={muscleTarget}
+                          onChange={(e) => setMuscleTarget(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <div style={fieldCaptionStyle()}>Target date</div>
+                        <input
+                          type="date"
+                          value={muscleGoalDate}
+                          onChange={(e) => setMuscleGoalDate(e.target.value)}
+                          style={{ ...textInputStyle(), marginBottom: 0 }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
                   {card.timeline && <GoalTimeline points={card.timeline.points} color={card.timeline.color} />}
                   <div style={{ fontSize: 13, color: "#444", lineHeight: 1.5 }}>{card.body}</div>
                   {card.flag && card.field && card.recommendedValue && (
@@ -1521,7 +1572,8 @@ export default function Onboarding() {
               {nutritionSuggestion ? (
                 <div>
                   <p style={{ fontSize: 12, color: "#777", marginBottom: 12 }}>
-                    A general estimate — not medical advice. Edit any number, or reset below.
+                    A general estimate that already factors in your typical training load — not
+                    medical advice. Edit any number, or reset below.
                   </p>
                   <div style={fieldCaptionStyle()}>Calories (kcal)</div>
                   <input
