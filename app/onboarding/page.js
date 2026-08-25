@@ -10,13 +10,34 @@ const GOAL_OPTIONS = [
   "Reduce stress",
 ];
 
+const MODULES = [
+  {
+    key: "nutrition",
+    label: "Nutrition",
+    desc: "Track what you eat and hit your daily targets.",
+  },
+  {
+    key: "exercise",
+    label: "Exercise and training",
+    desc: "Get a workout plan that adapts to you over time.",
+  },
+  {
+    key: "mealprep",
+    label: "Meal-prep",
+    desc: "Plan your week and batch-cook it in one guided session.",
+  },
+];
+
+function joinWithAnd(arr) {
+  if (arr.length === 0) return "";
+  if (arr.length === 1) return arr[0];
+  if (arr.length === 2) return arr[0] + " and " + arr[1];
+  return arr.slice(0, -1).join(", ") + ", and " + arr[arr.length - 1];
+}
+
 export default function Onboarding() {
   const [step, setStep] = useState("goals");
-  const [goals, setGoals] = useState([
-    "Lose weight",
-    "General health",
-    "Train for an event",
-  ]);
+  const [goals, setGoals] = useState([]);
   const [notes, setNotes] = useState("");
   const [modules, setModules] = useState({
     nutrition: true,
@@ -49,9 +70,9 @@ export default function Onboarding() {
   }
 
   const onModules = [
-    modules.nutrition && "nutrition",
-    modules.exercise && "exercise",
-    modules.mealprep && "meal-prep",
+    modules.nutrition && "Nutrition",
+    modules.exercise && "Exercise",
+    modules.mealprep && "Meal-prep",
   ].filter(Boolean);
 
   return (
@@ -120,24 +141,26 @@ export default function Onboarding() {
           <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
             Turn off anything you don't need.
           </p>
-          {[
-            { key: "nutrition", label: "Nutrition" },
-            { key: "exercise", label: "Exercise and training" },
-            { key: "mealprep", label: "Meal-prep" },
-          ].map((m) => (
+          {MODULES.map((m) => (
             <div
               key={m.key}
               style={{
                 display: "flex",
                 justifyContent: "space-between",
-                alignItems: "center",
+                alignItems: "flex-start",
                 padding: "12px 16px",
                 background: "#f5f5f5",
                 borderRadius: 10,
                 marginBottom: 8,
+                gap: 12,
               }}
             >
-              <span>{m.label}</span>
+              <div>
+                <div style={{ fontWeight: 500 }}>{m.label}</div>
+                <div style={{ fontSize: 12, color: "#777", marginTop: 2 }}>
+                  {m.desc}
+                </div>
+              </div>
               <button
                 onClick={() => toggleModule(m.key)}
                 style={{
@@ -147,6 +170,7 @@ export default function Onboarding() {
                   background: modules[m.key] ? "#dcfce7" : "#eee",
                   color: modules[m.key] ? "#166534" : "#888",
                   fontSize: 13,
+                  flexShrink: 0,
                 }}
               >
                 {modules[m.key] ? "On" : "Off"}
@@ -176,7 +200,7 @@ export default function Onboarding() {
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>You're set</h1>
           <p style={{ color: "#666", fontSize: 14 }}>
             {onModules.length > 0
-              ? onModules.join(", ") +
+              ? joinWithAnd(onModules) +
                 (onModules.length > 1 ? " are on. " : " is on. ")
               : "Nothing extra is on. "}
             We'll ask about anything else the first time it matters.
