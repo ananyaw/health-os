@@ -3,17 +3,18 @@ import { useState } from "react";
 
 const GOAL_OPTIONS = [
   "Lose weight",
-  "Build muscle",
+  "Build muscle / strength",
   "General health",
   "Train for an event",
   "Eat healthier",
   "Reduce stress",
   "Improve endurance",
-  "Improve strength",
   "Sleep better",
   "Increase energy",
   "Other",
 ];
+
+const NON_DATED_GOALS = ["Lose weight", "Build muscle / strength", "Train for an event"];
 
 const MODULES = [
   {
@@ -98,6 +99,43 @@ const CADENCE_OPTIONS = [
   { key: "daily", label: "Most days", desc: "Little to no batching." },
 ];
 
+const DIETARY_OPTIONS = [
+  "None",
+  "Vegetarian",
+  "Vegan",
+  "Gluten-free",
+  "Dairy-free",
+  "Nut allergy",
+  "Other",
+];
+
+const EATING_PATTERN_OPTIONS = [
+  { key: "3meals", label: "3 meals a day", desc: "Standard breakfast, lunch, dinner." },
+  { key: "grazing", label: "Grazing / small frequent meals", desc: "Many small meals throughout the day." },
+  { key: "if", label: "Intermittent fasting", desc: "Eating window with a fasting period." },
+  { key: "varies", label: "Varies day to day", desc: "No consistent pattern." },
+];
+
+const ACTIVITY_LEVEL_OPTIONS = [
+  { key: "sedentary", label: "Sedentary", desc: "Little to no exercise day to day." },
+  { key: "light", label: "Lightly active", desc: "Light activity 1-3 days/week." },
+  { key: "moderate", label: "Moderately active", desc: "Moderate activity 3-5 days/week." },
+  { key: "very", label: "Very active", desc: "Hard exercise 6-7 days/week." },
+];
+const ACTIVITY_MULTIPLIERS = { sedentary: 1.2, light: 1.375, moderate: 1.55, very: 1.725 };
+
+const SKIPPABLE_STEPS = [
+  "trainerfreq",
+  "activities",
+  "access",
+  "injuries",
+  "calibration",
+  "tone",
+  "trackingpref",
+  "nutrition",
+  "mealprep",
+];
+
 function joinWithAnd(arr) {
   if (arr.length === 0) return "";
   if (arr.length === 1) return arr[0];
@@ -106,21 +144,281 @@ function joinWithAnd(arr) {
 }
 
 function nextStep(current, modules) {
-  const wantsFood = modules.nutrition || modules.mealprep;
-  if (current === "goals") return "modules";
-  if (current === "modules") {
-    if (modules.exercise) return "trainerfreq";
-    return wantsFood ? "food" : "done";
+  const hasNutrition = modules.nutrition;
+  const hasMealprep = modules.mealprep;
+  const hasExercise = modules.exercise;
+  const showGate = hasExercise || hasNutrition || hasMealprep;
+
+  function afterTrainer() {
+    if (hasNutrition) return "nutrition";
+    if (hasMealprep) return "mealprep";
+    return "done";
   }
+
+  if (current === "goals") return "modules";
+  if (current === "modules") return showGate ? "personalize" : "done";
+  if (current === "personalize") return hasExercise ? "trainerfreq" : afterTrainer();
   if (current === "trainerfreq") return "activities";
   if (current === "activities") return "access";
   if (current === "access") return "injuries";
   if (current === "injuries") return "calibration";
   if (current === "calibration") return "tone";
   if (current === "tone") return "trackingpref";
-  if (current === "trackingpref") return wantsFood ? "food" : "done";
-  if (current === "food") return "done";
+  if (current === "trackingpref") return afterTrainer();
+  if (current === "nutrition") return hasMealprep ? "mealprep" : "done";
+  if (current === "mealprep") return "done";
   return "done";
+}
+
+function computeSuggestedTargets({ age, sex, weightKg, goalWeightKg, heightCm, activityKey, goals }) {
+  const ageNum = parseFloat(age);
+  const weightNum = parseFloat(weightKg);
+  const heightNum = parseFloat(heightCm);
+  if (!ageNum || !weightNum || !heightNum || !sex) return null;
+
+  const bmr =
+    sex === "male"
+      ? 10 * weightNum + 6.25 * heightNum - 5 * ageNum + 5
+      : 10 * weightNum + 6.25 * heightNum - 5 * ageNum - 161;
+
+  const multiplier = ACTIVITY_MULTIPLIERS[activityKey] || 1.2;
+  const tdee = bmr * multiplier;
+
+  const goalWeightNum = parseFloat(goalWeightKg);
+  let calorieTarget = tdee;
+  if (goalWeightNum && goalWeightNum < weightNum) {
+    calorieTarget = tdee - 500;
+  } else if (goalWeightNum && goalWeightNum > weightNum) {
+    calorieTarget = tdee + 300;
+  }
+
+  const minFloor = sex === "male" ? 1500 : 1200;
+  calorieTarget = Math.max(calorieTarget, minFloor);
+  calorieTarget = Math.round(calorieTarget / 10) * 10;
+
+  const wantsHighProtein = goals.includes("Lose weight") || goals.includes("Build muscle / strength");
+  const proteinPerKg = wantsHighProtein ? 1.8 : 1.0;
+  const proteinG = Math.round(proteinPerKg * weightNum);
+  const proteinCals = proteinG * 4;
+
+  const fatCals = calorieTarget * 0.27;
+  const fatG = Math.round(fatCals / 9);
+
+  const carbCals = Math.max(calorieTarget - proteinCals - fatCals, 0);
+  const carbG = Math.round(carbCals / 4);
+
+  return { calories: calorieTarget, protein: proteinG, carbs: carbG, fat: fatG };
+}
+
+function weeksBetween(dateStr) {
+  if (!dateStr) return null;
+  const target = new Date(dateStr);
+  if (isNaN(target.getTime())) return null;
+  const now = new Date();
+  const ms = target.getTime() - now.getTime();
+  return ms / (1000 * 60 * 60 * 24 * 7);
+}
+
+function toLocalISODate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return y + "-" + m + "-" + day;
+}
+
+function isoDateFromWeeksFromNow(weeksFromNow) {
+  const d = new Date(Date.now() + weeksFromNow * 7 * 24 * 60 * 60 * 1000);
+  return toLocalISODate(d);
+}
+
+function formatDate(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }) {
+  if (!goals.includes("Lose weight")) return null;
+  const cur = parseFloat(currentWeight);
+  const goal = parseFloat(goalWeight);
+  if (!cur || !goal) {
+    return { title: "Weight", body: "Add your current and goal weight above to see a suggested pace." };
+  }
+
+  const diff = cur - goal;
+  const isLoss = diff > 0;
+  const absDiff = Math.abs(diff);
+
+  if (absDiff < 0.5) {
+    return { title: "Weight", body: "Your current and goal weight are basically the same — nothing to plan here." };
+  }
+
+  const safeMin = isLoss ? 0.25 : 0.15;
+  const safeMax = isLoss ? 1.0 : 0.5;
+  const midRate = (safeMin + safeMax) / 2;
+
+  const weeks = weeksBetween(weightGoalDate);
+
+  if (weeks === null || weeks <= 0) {
+    const recWeeks = absDiff / midRate;
+    const recIso = isoDateFromWeeksFromNow(recWeeks);
+    return {
+      title: "Weight",
+      flag: true,
+      field: "weightGoalDate",
+      recommendedValue: recIso,
+      applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
+      body:
+        (weeks === null ? "Add a target date for " : "Your target date has passed for ") +
+        cur +
+        "kg → " +
+        goal +
+        "kg. At a sustainable pace (~" +
+        midRate.toFixed(2) +
+        "kg/week), that's about " +
+        Math.round(recWeeks) +
+        " weeks out — around " +
+        formatDate(recIso) +
+        ".",
+    };
+  }
+
+  const impliedRate = absDiff / weeks;
+
+  if (impliedRate > safeMax) {
+    const recWeeks = absDiff / safeMax;
+    const recIso = isoDateFromWeeksFromNow(recWeeks);
+    return {
+      title: "Weight",
+      flag: true,
+      field: "weightGoalDate",
+      recommendedValue: recIso,
+      applyLabel: "Use recommended date (" + formatDate(recIso) + ")",
+      body:
+        cur +
+        "kg → " +
+        goal +
+        "kg by " +
+        formatDate(weightGoalDate) +
+        " implies ~" +
+        impliedRate.toFixed(2) +
+        "kg/week — faster than the generally sustainable range (" +
+        safeMin +
+        "-" +
+        safeMax +
+        "kg/week). A more realistic target date would be around " +
+        formatDate(recIso) +
+        " (~" +
+        Math.round(recWeeks) +
+        " weeks, " +
+        safeMax +
+        "kg/week).",
+    };
+  }
+
+  const midIso = isoDateFromWeeksFromNow(weeks / 2);
+  const midWeight = isLoss ? cur - absDiff / 2 : cur + absDiff / 2;
+  return {
+    title: "Weight",
+    flag: false,
+    body:
+      cur +
+      "kg → " +
+      goal +
+      "kg by " +
+      formatDate(weightGoalDate) +
+      " works out to ~" +
+      impliedRate.toFixed(2) +
+      "kg/week — a realistic pace. Halfway point: ~" +
+      midWeight.toFixed(1) +
+      "kg by " +
+      formatDate(midIso) +
+      ".",
+  };
+}
+
+function buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq }) {
+  if (!goals.includes("Train for an event") || !eventName) return null;
+  const lowFreq = !currentFreq || currentFreq === "0 days/week" || currentFreq === "1-2 days/week";
+  const goalIsFinishOriented = eventGoal && eventGoal.toLowerCase().indexOf("finish") !== -1;
+
+  if (!eventDate) {
+    return { title: "Event: " + eventName, body: "Add an event date so we can check whether your timeline is realistic." };
+  }
+
+  const weeks = weeksBetween(eventDate);
+
+  if (weeks === null) {
+    return { title: "Event: " + eventName, body: "Add a valid event date to check your timeline." };
+  }
+  if (weeks <= 0) {
+    return { title: "Event: " + eventName, flag: true, body: "That date has already passed — double check it." };
+  }
+
+  const tight = weeks < 4 && lowFreq;
+
+  if (tight && !goalIsFinishOriented) {
+    return {
+      title: "Event: " + eventName,
+      flag: true,
+      field: "eventGoal",
+      recommendedValue: "Just finish comfortably",
+      applyLabel: "Use this goal instead",
+      body:
+        "Only ~" +
+        Math.round(weeks) +
+        " weeks out, training " +
+        (currentFreq || "rarely") +
+        " — tight to build up safely. We'd recommend treating this one as a “just finish” goal rather than chasing a specific time.",
+    };
+  }
+
+  if (tight && goalIsFinishOriented) {
+    return {
+      title: "Event: " + eventName,
+      flag: false,
+      body:
+        "~" +
+        Math.round(weeks) +
+        " weeks out — a finish-focused goal is the right call given the short runway and current training frequency.",
+    };
+  }
+
+  return {
+    title: "Event: " + eventName,
+    flag: false,
+    body:
+      "~" +
+      Math.round(weeks) +
+      " weeks until " +
+      eventName +
+      (eventGoal ? " — goal: " + eventGoal : "") +
+      ". Reasonable runway — we'll build the week-by-week plan once your trainer profile is set up.",
+  };
+}
+
+function buildMuscleNote({ goals, muscleTarget, muscleGoalDate }) {
+  if (!goals.includes("Build muscle / strength")) return null;
+  return {
+    title: "Muscle / strength",
+    body: muscleTarget
+      ? "Target: " +
+        muscleTarget +
+        (muscleGoalDate ? " by " + formatDate(muscleGoalDate) : "") +
+        ". We'll track progress once training starts."
+      : "No specific target set — we'll suggest one once training starts.",
+  };
+}
+
+function buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }) {
+  const simple = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
+  return simple.map((g) => ({
+    title: g === "Other" && otherGoalText ? otherGoalText : g,
+    body: simpleGoalDates[g]
+      ? "Check-in by " + formatDate(simpleGoalDates[g]) + "."
+      : "No check-in date set — that's fine, we'll follow up naturally.",
+  }));
 }
 
 function chipStyle(active) {
@@ -164,6 +462,27 @@ function sectionLabelStyle() {
     fontWeight: 600,
     color: "#444",
     marginBottom: 8,
+  };
+}
+
+function fieldCaptionStyle() {
+  return {
+    fontSize: 12,
+    color: "#777",
+    marginBottom: 4,
+  };
+}
+
+function applyButtonStyle() {
+  return {
+    padding: "8px 14px",
+    background: "#fff",
+    color: "#c2410c",
+    border: "1px solid #fdba74",
+    borderRadius: 8,
+    fontSize: 13,
+    marginTop: 8,
+    cursor: "pointer",
   };
 }
 
@@ -252,10 +571,13 @@ export default function Onboarding() {
   const [notes, setNotes] = useState("");
   const [currentWeight, setCurrentWeight] = useState("");
   const [goalWeight, setGoalWeight] = useState("");
+  const [weightGoalDate, setWeightGoalDate] = useState("");
   const [muscleTarget, setMuscleTarget] = useState("");
+  const [muscleGoalDate, setMuscleGoalDate] = useState("");
   const [eventName, setEventName] = useState("");
   const [eventDate, setEventDate] = useState("");
   const [eventGoal, setEventGoal] = useState("");
+  const [simpleGoalDates, setSimpleGoalDates] = useState({});
 
   const [modules, setModules] = useState({ nutrition: true, exercise: true, mealprep: true });
 
@@ -284,6 +606,18 @@ export default function Onboarding() {
   const [otherCuisineText, setOtherCuisineText] = useState("");
   const [cadence, setCadence] = useState("");
 
+  const [age, setAge] = useState("");
+  const [sex, setSex] = useState("");
+  const [heightCm, setHeightCm] = useState("");
+  const [activityLevel, setActivityLevel] = useState("");
+  const [dietary, setDietary] = useState([]);
+  const [otherDietaryText, setOtherDietaryText] = useState("");
+  const [eatingPattern, setEatingPattern] = useState("");
+  const [targetCalories, setTargetCalories] = useState("");
+  const [targetProtein, setTargetProtein] = useState("");
+  const [targetCarbs, setTargetCarbs] = useState("");
+  const [targetFat, setTargetFat] = useState("");
+
   function toggleGoal(g) {
     setGoals((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
   }
@@ -297,6 +631,7 @@ export default function Onboarding() {
   const toggleActivity = toggleFrom(setActivities);
   const toggleInjury = toggleFrom(setInjuries);
   const toggleCuisine = toggleFrom(setCuisines);
+  const toggleDietary = toggleFrom(setDietary);
 
   function toggleAccess(opt) {
     setAccess((prev) => {
@@ -310,11 +645,25 @@ export default function Onboarding() {
     });
   }
 
+  function setSimpleGoalDate(g, val) {
+    setSimpleGoalDates((prev) => ({ ...prev, [g]: val }));
+  }
+
   function goNext() {
     setStep(nextStep(step, modules));
   }
   function skipOnboarding() {
     setStep("done");
+  }
+  function resetTargets() {
+    setTargetCalories("");
+    setTargetProtein("");
+    setTargetCarbs("");
+    setTargetFat("");
+  }
+  function applyRecommendation(field, value) {
+    if (field === "weightGoalDate") setWeightGoalDate(value);
+    if (field === "eventGoal") setEventGoal(value);
   }
 
   const onModules = [
@@ -323,7 +672,26 @@ export default function Onboarding() {
     modules.mealprep && "Meal-prep",
   ].filter(Boolean);
 
-  const showSkip = step !== "goals" && step !== "done";
+  const showSkip = SKIPPABLE_STEPS.includes(step);
+
+  const suggestion = computeSuggestedTargets({
+    age,
+    sex,
+    weightKg: currentWeight,
+    goalWeightKg: goalWeight,
+    heightCm,
+    activityKey: activityLevel,
+    goals,
+  });
+
+  const simpleGoalsSelected = goals.filter((g) => NON_DATED_GOALS.indexOf(g) === -1);
+
+  const planCards = [
+    buildWeightPlan({ goals, currentWeight, goalWeight, weightGoalDate }),
+    buildEventPlan({ goals, eventName, eventDate, eventGoal, currentFreq }),
+    buildMuscleNote({ goals, muscleTarget, muscleGoalDate }),
+    ...buildSimpleGoalNotes({ goals, simpleGoalDates, otherGoalText }),
+  ].filter(Boolean);
 
   return (
     <main
@@ -350,7 +718,7 @@ export default function Onboarding() {
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>What are your goals?</h1>
           <p style={{ color: "#666", fontSize: 14 }}>
             Pick as many as apply — this takes a couple minutes and helps personalize things right
-            away. It's optional; you can skip ahead and fill it in later.
+            away.
           </p>
           <MultiChipsWithOther
             options={GOAL_OPTIONS}
@@ -366,29 +734,43 @@ export default function Onboarding() {
               <div style={sectionLabelStyle()}>Weight goal</div>
               <input
                 type="text"
-                placeholder="Current weight, e.g. 74 kg"
+                placeholder="Current weight (kg)"
                 value={currentWeight}
                 onChange={(e) => setCurrentWeight(e.target.value)}
                 style={textInputStyle()}
               />
               <input
                 type="text"
-                placeholder="Goal weight, e.g. 67 kg"
+                placeholder="Goal weight (kg)"
                 value={goalWeight}
                 onChange={(e) => setGoalWeight(e.target.value)}
+                style={textInputStyle()}
+              />
+              <div style={fieldCaptionStyle()}>Target date</div>
+              <input
+                type="date"
+                value={weightGoalDate}
+                onChange={(e) => setWeightGoalDate(e.target.value)}
                 style={{ ...textInputStyle(), marginBottom: 0 }}
               />
             </div>
           )}
 
-          {goals.includes("Build muscle") && (
+          {goals.includes("Build muscle / strength") && (
             <div style={sectionBoxStyle()}>
-              <div style={sectionLabelStyle()}>Muscle goal (optional)</div>
+              <div style={sectionLabelStyle()}>Muscle/strength goal (optional)</div>
               <input
                 type="text"
                 placeholder="Any specific target, e.g. bench 135 lb"
                 value={muscleTarget}
                 onChange={(e) => setMuscleTarget(e.target.value)}
+                style={textInputStyle()}
+              />
+              <div style={fieldCaptionStyle()}>Target date (optional)</div>
+              <input
+                type="date"
+                value={muscleGoalDate}
+                onChange={(e) => setMuscleGoalDate(e.target.value)}
                 style={{ ...textInputStyle(), marginBottom: 0 }}
               />
             </div>
@@ -404,9 +786,9 @@ export default function Onboarding() {
                 onChange={(e) => setEventName(e.target.value)}
                 style={textInputStyle()}
               />
+              <div style={fieldCaptionStyle()}>Event date</div>
               <input
-                type="text"
-                placeholder="When is it? (optional)"
+                type="date"
                 value={eventDate}
                 onChange={(e) => setEventDate(e.target.value)}
                 style={textInputStyle()}
@@ -418,6 +800,29 @@ export default function Onboarding() {
                 onChange={(e) => setEventGoal(e.target.value)}
                 style={{ ...textInputStyle(), marginBottom: 0 }}
               />
+            </div>
+          )}
+
+          {simpleGoalsSelected.length > 0 && (
+            <div style={sectionBoxStyle()}>
+              <div style={sectionLabelStyle()}>Check-in dates (optional)</div>
+              <p style={{ fontSize: 12, color: "#777", marginTop: -4, marginBottom: 12 }}>
+                These goals don't have a natural finish line, but a check-in date helps us follow
+                up at the right time.
+              </p>
+              {simpleGoalsSelected.map((g) => (
+                <div key={g} style={{ marginBottom: 10 }}>
+                  <div style={fieldCaptionStyle()}>
+                    {g === "Other" && otherGoalText ? otherGoalText : g}
+                  </div>
+                  <input
+                    type="date"
+                    value={simpleGoalDates[g] || ""}
+                    onChange={(e) => setSimpleGoalDate(g, e.target.value)}
+                    style={{ ...textInputStyle(), marginBottom: 0 }}
+                  />
+                </div>
+              ))}
             </div>
           )}
 
@@ -436,8 +841,7 @@ export default function Onboarding() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>What do you want help with?</h1>
           <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
-            Turn off anything you don't need. This is optional and helps personalize things right
-            away — everything here can be changed later too.
+            Turn off anything you don't need. Everything here can be changed later too.
           </p>
           {MODULES.map((m) => (
             <div
@@ -475,6 +879,29 @@ export default function Onboarding() {
             </div>
           ))}
           <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "personalize" && (
+        <div style={{ textAlign: "center", paddingTop: 24 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Want to personalize further?</h1>
+          <p style={{ color: "#666", fontSize: 14, margin: "12px 0 24px" }}>
+            A few more questions about training and food help us tailor things immediately. Takes
+            about 3 minutes. You can always fill this in later.
+          </p>
+          <ContinueButton onClick={goNext} label="Continue" />
+          <div
+            onClick={skipOnboarding}
+            style={{
+              fontSize: 13,
+              color: "#888",
+              textDecoration: "underline",
+              cursor: "pointer",
+              marginTop: 16,
+            }}
+          >
+            Skip for now
+          </div>
         </div>
       )}
 
@@ -602,7 +1029,128 @@ export default function Onboarding() {
         </div>
       )}
 
-      {step === "food" && (
+      {step === "nutrition" && (
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600 }}>Let's set up nutrition targets</h1>
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 16 }}>
+            This helps us suggest daily calorie and macro targets. Everything below is editable.
+          </p>
+
+          <div style={sectionBoxStyle()}>
+            <div style={sectionLabelStyle()}>About you</div>
+            <input
+              type="text"
+              placeholder="Current weight (kg)"
+              value={currentWeight}
+              onChange={(e) => setCurrentWeight(e.target.value)}
+              style={textInputStyle()}
+            />
+            <input
+              type="text"
+              placeholder="Goal weight (kg, optional)"
+              value={goalWeight}
+              onChange={(e) => setGoalWeight(e.target.value)}
+              style={textInputStyle()}
+            />
+            <input
+              type="text"
+              placeholder="Age"
+              value={age}
+              onChange={(e) => setAge(e.target.value)}
+              style={textInputStyle()}
+            />
+            <div style={{ fontSize: 13, color: "#666", margin: "4px 0 6px" }}>
+              Sex (used only for the calorie estimate)
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              {["male", "female"].map((s) => (
+                <span key={s} style={chipStyle(sex === s)} onClick={() => setSex(s)}>
+                  {s === "male" ? "Male" : "Female"}
+                </span>
+              ))}
+            </div>
+            <input
+              type="text"
+              placeholder="Height (cm)"
+              value={heightCm}
+              onChange={(e) => setHeightCm(e.target.value)}
+              style={{ ...textInputStyle(), marginBottom: 0 }}
+            />
+          </div>
+
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>
+            How active are you day to day (outside of workouts)?
+          </p>
+          <SingleChoiceCards options={ACTIVITY_LEVEL_OPTIONS} selected={activityLevel} onSelect={setActivityLevel} />
+
+          <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>Any dietary restrictions?</p>
+          <MultiChipsWithOther
+            options={DIETARY_OPTIONS}
+            selected={dietary}
+            onToggle={toggleDietary}
+            otherValue={otherDietaryText}
+            onOtherChange={setOtherDietaryText}
+            otherPlaceholder="What else?"
+          />
+
+          <p style={{ color: "#666", fontSize: 14, margin: "16px 0 8px" }}>How do you usually eat?</p>
+          <SingleChoiceCards options={EATING_PATTERN_OPTIONS} selected={eatingPattern} onSelect={setEatingPattern} />
+
+          {suggestion ? (
+            <div style={sectionBoxStyle()}>
+              <div style={sectionLabelStyle()}>Suggested daily targets</div>
+              <p style={{ fontSize: 12, color: "#777", marginTop: -4, marginBottom: 12 }}>
+                A general estimate based on what you shared above — not medical advice. Edit any
+                number, or reset below.
+              </p>
+              <input
+                type="number"
+                placeholder="Calories"
+                value={targetCalories !== "" ? targetCalories : String(suggestion.calories)}
+                onChange={(e) => setTargetCalories(e.target.value)}
+                style={textInputStyle()}
+              />
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="number"
+                  placeholder="Protein (g)"
+                  value={targetProtein !== "" ? targetProtein : String(suggestion.protein)}
+                  onChange={(e) => setTargetProtein(e.target.value)}
+                  style={{ ...textInputStyle(), flex: 1 }}
+                />
+                <input
+                  type="number"
+                  placeholder="Carbs (g)"
+                  value={targetCarbs !== "" ? targetCarbs : String(suggestion.carbs)}
+                  onChange={(e) => setTargetCarbs(e.target.value)}
+                  style={{ ...textInputStyle(), flex: 1 }}
+                />
+                <input
+                  type="number"
+                  placeholder="Fat (g)"
+                  value={targetFat !== "" ? targetFat : String(suggestion.fat)}
+                  onChange={(e) => setTargetFat(e.target.value)}
+                  style={{ ...textInputStyle(), flex: 1, marginBottom: 0 }}
+                />
+              </div>
+              <div
+                onClick={resetTargets}
+                style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 8 }}
+              >
+                Reset to suggested
+              </div>
+            </div>
+          ) : (
+            <p style={{ fontSize: 13, color: "#999", fontStyle: "italic", marginBottom: 16 }}>
+              Add your weight, age, sex, and height above to see suggested targets.
+            </p>
+          )}
+
+          <ContinueButton onClick={goNext} />
+        </div>
+      )}
+
+      {step === "mealprep" && (
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 600 }}>What are you into, food-wise?</h1>
           <p style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>Pick any cuisines you like.</p>
@@ -621,14 +1169,42 @@ export default function Onboarding() {
       )}
 
       {step === "done" && (
-        <div style={{ textAlign: "center", paddingTop: 40 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 600 }}>You're set</h1>
-          <p style={{ color: "#666", fontSize: 14 }}>
+        <div style={{ paddingTop: 24 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 600, textAlign: "center" }}>You're set</h1>
+          <p style={{ color: "#666", fontSize: 14, textAlign: "center", margin: "8px 0 24px" }}>
             {onModules.length > 0
               ? joinWithAnd(onModules) + (onModules.length > 1 ? " are on. " : " is on. ")
               : "Nothing extra is on. "}
-            We'll ask about anything else the first time it matters.
+            Here's how your goals stack up.
           </p>
+          {planCards.map((card, i) => (
+            <div
+              key={i}
+              style={{
+                background: card.flag ? "#fff7ed" : "#f0fdf4",
+                border: "1px solid " + (card.flag ? "#fdba74" : "#bbf7d0"),
+                borderRadius: 10,
+                padding: 14,
+                marginBottom: 12,
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 4 }}>{card.title}</div>
+              <div style={{ fontSize: 13, color: "#444" }}>{card.body}</div>
+              {card.flag && card.field && card.recommendedValue && (
+                <button
+                  onClick={() => applyRecommendation(card.field, card.recommendedValue)}
+                  style={applyButtonStyle()}
+                >
+                  {card.applyLabel || "Use recommended"}
+                </button>
+              )}
+            </div>
+          ))}
+          {planCards.length === 0 && (
+            <p style={{ color: "#666", fontSize: 14, textAlign: "center" }}>
+              We'll ask about anything else the first time it matters.
+            </p>
+          )}
         </div>
       )}
     </main>
