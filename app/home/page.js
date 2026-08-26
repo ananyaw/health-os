@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 // Mock data for now — once Supabase is wired up, this will come from real
 // onboarding answers and logged activity instead of these hardcoded values.
@@ -314,9 +315,59 @@ function WorkoutModal({ workout, onClose }) {
 
 export default function Home() {
   const [workoutOpen, setWorkoutOpen] = useState(false);
+  // Real weight entry, once we've fetched it from Supabase. Stays null
+  // (falls back to MOCK) until a row exists in weight_logs.
+  const [realWeightEntry, setRealWeightEntry] = useState(null);
+  const [savingWeight, setSavingWeight] = useState(false);
 
   const todayIso = toLocalISODate(new Date());
-  const weightLoggedToday = MOCK.weight.lastEntry.date === todayIso;
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadLatestWeight() {
+      const { data, error } = await supabase
+        .from("weight_logs")
+        .select("log_date, weight_kg")
+        .order("log_date", { ascending: false })
+        .limit(1);
+      if (!cancelled && !error && data && data.length > 0) {
+        setRealWeightEntry({ value: data[0].weight_kg, date: data[0].log_date });
+      }
+    }
+    loadLatestWeight();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function handleLogWeight() {
+    const promptUnit = MOCK.weightUnit;
+    const input = window.prompt(
+      "Enter today's weight in " + promptUnit + ":",
+      realWeightEntry ? String(realWeightEntry.value) : ""
+    );
+    if (input === null || input.trim() === "") return;
+    const value = parseFloat(input);
+    if (isNaN(value)) {
+      window.alert("Please enter a number.");
+      return;
+    }
+    setSavingWeight(true);
+    const { error } = await supabase
+      .from("weight_logs")
+      .upsert({ log_date: todayIso, weight_kg: value }, { onConflict: "log_date" });
+    setSavingWeight(false);
+    if (error) {
+      window.alert("Couldn't save your weight — try again. (" + error.message + ")");
+      return;
+    }
+    setRealWeightEntry({ value, date: todayIso });
+  }
+
+  // Merge in the real logged weight once we have it; everything else
+  // (goal, next checkpoint, start) is still mock until onboarding is wired up.
+  const weight = { ...MOCK.weight, lastEntry: realWeightEntry || MOCK.weight.lastEntry };
+  const weightLoggedToday = weight.lastEntry.date === todayIso;
 
   const caloriesEaten = MOCK.nutrition.meals.reduce((sum, m) => sum + m.calories, 0);
   const caloriesPct = (caloriesEaten / MOCK.nutrition.caloriesTarget) * 100;
@@ -331,7 +382,7 @@ export default function Home() {
   const buttonLabel = status === "done" ? "View" : status === "in_progress" ? "Continue" : "Start";
   const weekPace = weekPacePhrase(MOCK.workout.weeklyDone, MOCK.workout.weeklyPlanned);
 
-  const weightStatus = computeWeightStatus(MOCK.weight, MOCK.weightUnit, todayIso);
+  const weightStatus = computeWeightStatus(weight, MOCK.weightUnit, todayIso);
 
   const preppedCalories = MOCK.mealPrep.dishes.reduce((sum, d) => sum + d.calories, 0);
   const prepAnalysis = mealPrepAnalysis(caloriesEaten, preppedCalories, MOCK.nutrition.caloriesTarget);
@@ -362,11 +413,13 @@ export default function Home() {
           <div>
             <div style={{ fontWeight: 600, fontSize: 14 }}>You haven't logged your weight today</div>
             <div style={{ fontSize: 12, color: "#92400e", marginTop: 2 }}>
-              Last entry: {MOCK.weight.lastEntry.value}
-              {MOCK.weightUnit} on {formatDateShort(MOCK.weight.lastEntry.date)}
+              Last entry: {weight.lastEntry.value}
+              {MOCK.weightUnit} on {formatDateShort(weight.lastEntry.date)}
             </div>
           </div>
           <button
+            onClick={handleLogWeight}
+            disabled={savingWeight}
             style={{
               padding: "8px 14px",
               background: "#111",
@@ -376,9 +429,11 @@ export default function Home() {
               fontSize: 13,
               flexShrink: 0,
               marginLeft: 12,
+              cursor: savingWeight ? "default" : "pointer",
+              opacity: savingWeight ? 0.6 : 1,
             }}
           >
-            Log it
+            {savingWeight ? "Saving…" : "Log it"}
           </button>
         </div>
       )}
@@ -388,18 +443,18 @@ export default function Home() {
         <div style={{ display: "flex", gap: 8 }}>
           {statBlock(
             "Most recent",
-            MOCK.weight.lastEntry.value + MOCK.weightUnit,
-            formatDateShort(MOCK.weight.lastEntry.date)
+            weight.lastEntry.value + MOCK.weightUnit,
+            formatDateShort(weight.lastEntry.date)
           )}
           {statBlock(
             "Next check-in",
-            MOCK.weight.nextCheckpoint.value + MOCK.weightUnit,
-            formatDateShort(MOCK.weight.nextCheckpoint.date)
+            weight.nextCheckpoint.value + MOCK.weightUnit,
+            formatDateShort(weight.nextCheckpoint.date)
           )}
           {statBlock(
             "Goal",
-            MOCK.weight.goal.value + MOCK.weightUnit,
-            formatDateShort(MOCK.weight.goal.date)
+            weight.goal.value + MOCK.weightUnit,
+            formatDateShort(weight.goal.date)
           )}
         </div>
         <div style={insightBoxStyle(!weightStatus.behind)}>
