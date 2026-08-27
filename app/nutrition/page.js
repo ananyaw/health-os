@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 // Mock data / mock AI for now. Real photo+text estimation via the
 // Anthropic API (server-side route, not browser-side) is a follow-up
@@ -78,29 +79,12 @@ function dayProgressPct() {
   return Math.min(100, Math.max(0, ((now.getTime() - startOfDay.getTime()) / (24 * 60 * 60 * 1000)) * 100));
 }
 
-// Empty-items skeleton for a day with nothing logged (today/future default).
 function emptyDayItems() {
   const obj = {};
   MEAL_SLOTS.forEach((slot) => {
     obj[slot] = [];
   });
   return obj;
-}
-// Past days that haven't been touched get one auto-filled item per slot,
-// matching the plan, so history doesn't look broken in this mock.
-function defaultPastDayItems(iso) {
-  const obj = {};
-  MEAL_SLOTS.forEach((slot) => {
-    const t = MEAL_TEMPLATE[slot];
-    obj[slot] = [
-      { id: iso + "-" + slot + "-default", name: "Logged meal", calories: t.calories, protein: t.protein, carbs: t.carbs, fat: t.fat },
-    ];
-  });
-  return obj;
-}
-function getItemsForDay(loggedItems, iso, todayIso) {
-  if (loggedItems[iso]) return loggedItems[iso];
-  return iso < todayIso ? defaultPastDayItems(iso) : emptyDayItems();
 }
 function sumItemsField(items, field) {
   return items.reduce((sum, it) => sum + (it[field] || 0), 0);
@@ -362,20 +346,45 @@ export default function Nutrition() {
   const [selectedDate, setSelectedDate] = useState(todayIso);
   const [showMacros, setShowMacros] = useState(true);
   const [modalState, setModalState] = useState(null); // null | { iso, slot, item? }
-  const [loggedItems, setLoggedItems] = useState({
-    [todayIso]: {
-      Breakfast: [
-        { id: "seed-coffee", name: "Coffee with milk", calories: 50, protein: 2, carbs: 5, fat: 2 },
-        { id: "seed-banana", name: "Banana", calories: 105, protein: 1, carbs: 27, fat: 0 },
-      ],
-      Lunch: [],
-      Dinner: [],
-      Snack: [],
-    },
-  });
+  const [dayItems, setDayItems] = useState(emptyDayItems());
+  const [loading, setLoading] = useState(true);
 
   const isFuture = selectedDate > todayIso;
-  const dayItems = getItemsForDay(loggedItems, selectedDate, todayIso);
+
+  // Fetch this day's real logged food from Supabase whenever the
+  // selected date changes.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from("food_logs")
+        .select("*")
+        .eq("log_date", selectedDate)
+        .order("created_at", { ascending: true });
+      if (cancelled) return;
+      const grouped = emptyDayItems();
+      if (!error && data) {
+        data.forEach((row) => {
+          if (!grouped[row.slot]) grouped[row.slot] = [];
+          grouped[row.slot].push({
+            id: row.id,
+            name: row.name,
+            calories: row.calories,
+            protein: row.protein,
+            carbs: row.carbs,
+            fat: row.fat,
+          });
+        });
+      }
+      setDayItems(grouped);
+      setLoading(false);
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDate]);
 
   const allItems = MEAL_SLOTS.flatMap((slot) => dayItems[slot]);
   const caloriesTotal = sumItemsField(allItems, "calories");
@@ -409,38 +418,54 @@ export default function Nutrition() {
     setModalState({ iso: selectedDate, slot, item });
   }
 
-  function handleSaveItem(values, andAddAnother) {
-    setLoggedItems((prev) => {
-      const current = prev[modalState.iso] || getItemsForDay(prev, modalState.iso, todayIso);
-      const oldSlotItems = current[values.slot] || [];
-      let newSlotItems;
-      if (modalState.item) {
-        // If the slot changed while editing, remove from old slot first.
-        const isSameSlot = modalState.slot === values.slot;
-        if (isSameSlot) {
-          newSlotItems = oldSlotItems.map((it) => (it.id === modalState.item.id ? { ...it, ...values } : it));
-        } else {
-          newSlotItems = [...oldSlotItems, { ...values, id: modalState.item.id }];
-        }
-      } else {
-        newSlotItems = [...oldSlotItems, { ...values, id: Date.now() + "-" + Math.round(Math.random() * 1000) }];
+  async function handleSaveItem(values, andAddAnother) {
+    if (modalState.item) {
+      const { error } = await supabase
+        .from("food_logs")
+        .update({ slot: values.slot, name: values.name, calories: values.calories, protein: values.protein, carbs: values.carbs, fat: values.fat })
+        .eq("id", modalState.item.id);
+      if (error) {
+        window.alert("Couldn't save — try again. (" + error.message + ")");
+        return;
       }
-      const updatedDay = { ...current, [values.slot]: newSlotItems };
-      if (modalState.item && modalState.slot !== values.slot) {
-        updatedDay[modalState.slot] = (current[modalState.slot] || []).filter((it) => it.id !== modalState.item.id);
+      setDayItems((prev) => {
+        const next = { ...prev };
+        next[modalState.slot] = (next[modalState.slot] || []).filter((it) => it.id !== modalState.item.id);
+        next[values.slot] = [...(next[values.slot] || []), { id: modalState.item.id, ...values }];
+        return next;
+      });
+    } else {
+      const { data, error } = await supabase
+        .from("food_logs")
+        .insert({ log_date: modalState.iso, slot: values.slot, name: values.name, calories: values.calories, protein: values.protein, carbs: values.carbs, fat: values.fat })
+        .select()
+        .single();
+      if (error) {
+        window.alert("Couldn't save — try again. (" + error.message + ")");
+        return;
       }
-      return { ...prev, [modalState.iso]: updatedDay };
-    });
+      setDayItems((prev) => ({
+        ...prev,
+        [values.slot]: [
+          ...(prev[values.slot] || []),
+          { id: data.id, name: data.name, calories: data.calories, protein: data.protein, carbs: data.carbs, fat: data.fat },
+        ],
+      }));
+    }
     if (!andAddAnother) setModalState(null);
     else setModalState({ iso: modalState.iso, slot: values.slot });
   }
 
-  function handleDeleteItem() {
-    setLoggedItems((prev) => {
-      const current = prev[modalState.iso] || getItemsForDay(prev, modalState.iso, todayIso);
-      const slotItems = (current[modalState.slot] || []).filter((it) => it.id !== modalState.item.id);
-      return { ...prev, [modalState.iso]: { ...current, [modalState.slot]: slotItems } };
-    });
+  async function handleDeleteItem() {
+    const { error } = await supabase.from("food_logs").delete().eq("id", modalState.item.id);
+    if (error) {
+      window.alert("Couldn't delete — try again. (" + error.message + ")");
+      return;
+    }
+    setDayItems((prev) => ({
+      ...prev,
+      [modalState.slot]: (prev[modalState.slot] || []).filter((it) => it.id !== modalState.item.id),
+    }));
     setModalState(null);
   }
 
@@ -504,7 +529,9 @@ export default function Nutrition() {
               </div>
             </div>
             {items.length === 0 ? (
-              <div style={{ fontSize: 12, color: "#999", padding: "6px 0" }}>{isFuture ? "Nothing planned to log yet." : "Nothing logged yet."}</div>
+              <div style={{ fontSize: 12, color: "#999", padding: "6px 0" }}>
+                {loading ? "Loading…" : isFuture ? "Nothing planned to log yet." : "Nothing logged yet."}
+              </div>
             ) : (
               items.map((item, i) => (
                 <div
@@ -529,8 +556,8 @@ export default function Nutrition() {
       })}
 
       <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        AI estimate is mocked for now — real photo/text analysis via the Anthropic API is a follow-up step. This screen
-        is still mock data end-to-end (nothing saved to Supabase yet).
+        Logging is real now — saved to Supabase per day. The AI estimate is still mocked (keyword-based); real
+        photo/text analysis via the Anthropic API is a follow-up step.
       </p>
 
       {modalState && (
