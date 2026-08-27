@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 const GOAL_OPTIONS = [
   "Lose weight",
@@ -923,6 +924,97 @@ export default function Onboarding() {
   const [targetCarbs, setTargetCarbs] = useState("");
   const [targetFat, setTargetFat] = useState("");
 
+  const [saveStatus, setSaveStatus] = useState("idle"); // idle | saving | saved | error
+
+  // Bundles every onboarding answer into one object to store as JSON.
+  // Kept as one flexible blob (rather than a fixed-column table) since
+  // this flow keeps changing shape as it's refined.
+  function buildAnswersPayload() {
+    return {
+      goals,
+      otherGoalText,
+      notes,
+      weightUnit,
+      currentWeight,
+      goalWeight,
+      weightGoalDate,
+      muscleTarget,
+      muscleGoalDate,
+      eventName,
+      eventDate,
+      eventGoal,
+      modules,
+      age,
+      sex,
+      heightUnit,
+      heightFeet,
+      heightInches,
+      heightCm,
+      currentFreq,
+      desiredFreq,
+      sessionLength,
+      activities,
+      otherActivityText,
+      schedulePref,
+      access,
+      otherAccessText,
+      injuries,
+      injuryDetails,
+      squatBench,
+      milePace,
+      swimDistance,
+      notSure,
+      tone,
+      trackingPref,
+      cuisines,
+      otherCuisineText,
+      cadence,
+      activityLevel,
+      dietary,
+      otherDietaryText,
+      eatingPattern,
+      targetCalories,
+      targetProtein,
+      targetCarbs,
+      targetFat,
+    };
+  }
+
+  // Single-user pilot: keep exactly one profile row. Update it if it
+  // already exists, otherwise create it.
+  async function saveProfile() {
+    setSaveStatus("saving");
+    const answers = buildAnswersPayload();
+    const { data: existing, error: selectError } = await supabase
+      .from("profile")
+      .select("id")
+      .limit(1);
+    if (selectError) {
+      setSaveStatus("error");
+      return;
+    }
+    let saveError = null;
+    if (existing && existing.length > 0) {
+      const { error } = await supabase
+        .from("profile")
+        .update({ answers, updated_at: new Date().toISOString() })
+        .eq("id", existing[0].id);
+      saveError = error;
+    } else {
+      const { error } = await supabase.from("profile").insert({ answers });
+      saveError = error;
+    }
+    setSaveStatus(saveError ? "error" : "saved");
+  }
+
+  // Auto-save once the user reaches the results page.
+  useEffect(() => {
+    if (step === "done") {
+      saveProfile();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [step]);
+
   function toggleGoal(g) {
     setGoals((prev) => (prev.includes(g) ? prev.filter((x) => x !== g) : [...prev, g]));
   }
@@ -1463,6 +1555,22 @@ export default function Onboarding() {
               : "Nothing extra is on. "}
             Here's your timeline, and how the modules get you there.
           </p>
+
+          <div style={{ textAlign: "center", marginBottom: 16, fontSize: 12 }}>
+            {saveStatus === "saving" && <span style={{ color: "#999" }}>Saving your plan…</span>}
+            {saveStatus === "saved" && <span style={{ color: "#166534" }}>✓ Saved</span>}
+            {saveStatus === "error" && (
+              <span style={{ color: "#b91c1c" }}>
+                Couldn't save —{" "}
+                <button
+                  onClick={saveProfile}
+                  style={{ border: "none", background: "none", color: "#b91c1c", textDecoration: "underline", cursor: "pointer", fontSize: 12, padding: 0 }}
+                >
+                  try again
+                </button>
+              </span>
+            )}
+          </div>
 
           {planCards.length > 0 && (
             <div style={{ marginBottom: 24 }}>
