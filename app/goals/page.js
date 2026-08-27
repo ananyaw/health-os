@@ -1,7 +1,9 @@
 "use client";
+import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
-// Mock data for now — same pattern as Home. Once real onboarding answers and
-// logged history persist (Supabase), this reads from that instead.
+// Fallback data — used until real onboarding answers / logged weight exist,
+// so the screen isn't empty on a fresh Supabase project.
 const MOCK = {
   weightUnit: "kg",
   weight: {
@@ -44,8 +46,61 @@ function formatDateShort(iso) {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function weightGoalStatus() {
-  const { startEntry, lastEntry, goal } = MOCK.weight;
+function lbToKg(lb) {
+  return lb * 0.453592;
+}
+function kgToLb(kg) {
+  return kg / 0.453592;
+}
+
+// Builds the weight data Goals needs (all values in kg internally),
+// preferring real Supabase data and falling back to MOCK piece by piece
+// when a piece isn't available yet (e.g. no weight logged yet, or
+// onboarding hasn't been completed/saved).
+function buildWeightData(profileAnswers, latestLog, earliestLog) {
+  const unit = (profileAnswers && profileAnswers.weightUnit) || MOCK.weightUnit;
+  const toKg = (v) => (unit === "lb" ? lbToKg(parseFloat(v)) : parseFloat(v));
+
+  let startEntry = null;
+  if (earliestLog) {
+    startEntry = { value: earliestLog.weight_kg, date: earliestLog.log_date };
+  } else if (profileAnswers && profileAnswers.currentWeight) {
+    startEntry = { value: toKg(profileAnswers.currentWeight), date: toLocalISODate(new Date()) };
+  }
+
+  let goal = null;
+  if (profileAnswers && profileAnswers.goalWeight && profileAnswers.weightGoalDate) {
+    goal = { value: toKg(profileAnswers.goalWeight), date: profileAnswers.weightGoalDate };
+  }
+
+  let lastEntry = null;
+  if (latestLog) {
+    lastEntry = { value: latestLog.weight_kg, date: latestLog.log_date };
+  } else if (startEntry) {
+    lastEntry = startEntry;
+  }
+
+  if (!startEntry || !goal || !lastEntry) {
+    return { ...MOCK.weight, unit: MOCK.weightUnit, isReal: false };
+  }
+  return { startEntry, lastEntry, goal, unit, isReal: true };
+}
+
+function buildEventData(profileAnswers) {
+  if (!profileAnswers || !profileAnswers.eventDate) {
+    return { ...MOCK.event, isReal: false };
+  }
+  return {
+    name: profileAnswers.eventName || MOCK.event.name,
+    date: profileAnswers.eventDate,
+    goal: profileAnswers.eventGoal || "Finish",
+    currentFreq: profileAnswers.currentFreq || profileAnswers.desiredFreq || "",
+    isReal: true,
+  };
+}
+
+function weightGoalStatus(weightData) {
+  const { startEntry, lastEntry, goal } = weightData;
   const totalDays = daysBetween(startEntry.date, goal.date);
   const elapsedDays = daysBetween(startEntry.date, toLocalISODate(new Date()));
   const pct = totalDays > 0 ? Math.min(1, Math.max(0, elapsedDays / totalDays)) : 0;
@@ -54,10 +109,9 @@ function weightGoalStatus() {
   const isLoss = goal.value < startEntry.value;
   const behindBy = isLoss ? diff : -diff;
 
-  const progressPct = Math.min(
-    100,
-    Math.max(0, ((startEntry.value - lastEntry.value) / (startEntry.value - goal.value)) * 100)
-  );
+  const denom = startEntry.value - goal.value;
+  const progressPct =
+    denom !== 0 ? Math.min(100, Math.max(0, ((startEntry.value - lastEntry.value) / denom) * 100)) : 100;
 
   let status = "on_track";
   if (behindBy > 1.5) status = "at_risk";
@@ -66,12 +120,12 @@ function weightGoalStatus() {
   return { progressPct, status };
 }
 
-function eventGoalStatus() {
-  const weeks = weeksBetween(MOCK.event.date);
+function eventGoalStatus(eventData) {
+  const weeks = weeksBetween(eventData.date);
   const lowFreq =
-    !MOCK.event.currentFreq ||
-    MOCK.event.currentFreq === "0 days/week" ||
-    MOCK.event.currentFreq === "1-2 days/week";
+    !eventData.currentFreq ||
+    eventData.currentFreq === "0 days/week" ||
+    eventData.currentFreq === "1-2 days/week";
   let status = "on_track";
   if (weeks !== null && weeks < 4 && lowFreq) status = "at_risk";
   else if (weeks !== null && weeks < 8 && lowFreq) status = "behind";
@@ -124,8 +178,37 @@ function EditLink() {
 }
 
 export default function Goals() {
-  const weightStatus = weightGoalStatus();
-  const eventStatus = eventGoalStatus();
+  const [profileAnswers, setProfileAnswers] = useState(null);
+  const [latestLog, setLatestLog] = useState(null);
+  const [earliestLog, setEarliestLog] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const [profileRes, latestRes, earliestRes] = await Promise.all([
+        supabase.from("profile").select("answers").order("updated_at", { ascending: false }).limit(1),
+        supabase.from("weight_logs").select("log_date, weight_kg").order("log_date", { ascending: false }).limit(1),
+        supabase.from("weight_logs").select("log_date, weight_kg").order("log_date", { ascending: true }).limit(1),
+      ]);
+      if (cancelled) return;
+      if (profileRes.data && profileRes.data.length > 0) setProfileAnswers(profileRes.data[0].answers);
+      if (latestRes.data && latestRes.data.length > 0) setLatestLog(latestRes.data[0]);
+      if (earliestRes.data && earliestRes.data.length > 0) setEarliestLog(earliestRes.data[0]);
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const weightData = buildWeightData(profileAnswers, latestLog, earliestLog);
+  const eventData = buildEventData(profileAnswers);
+  const weightStatus = weightGoalStatus(weightData);
+  const eventStatus = eventGoalStatus(eventData);
+
+  // Display in whichever unit the weight is tracked in; values are kg internally.
+  const displayUnit = weightData.unit;
+  const toDisplay = (kg) => (displayUnit === "lb" ? Math.round(kgToLb(kg) * 10) / 10 : Math.round(kg * 10) / 10);
 
   return (
     <main
@@ -147,9 +230,9 @@ export default function Goals() {
           <StatusChip status={weightStatus.status} />
         </div>
         <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>
-          {MOCK.weight.lastEntry.value}
-          {MOCK.weightUnit} now → {MOCK.weight.goal.value}
-          {MOCK.weightUnit} by {formatDateShort(MOCK.weight.goal.date)}
+          {toDisplay(weightData.lastEntry.value)}
+          {displayUnit} now → {toDisplay(weightData.goal.value)}
+          {displayUnit} by {formatDateShort(weightData.goal.date)}
         </div>
         <div style={progressBarOuter()}>
           <div style={progressBarInner(weightStatus.progressPct, STATUS_META[weightStatus.status].color)} />
@@ -162,25 +245,30 @@ export default function Goals() {
 
       <div style={cardStyle("#16a34a")}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{MOCK.event.name}</div>
+          <div style={{ fontWeight: 600, fontSize: 14 }}>{eventData.name}</div>
           <StatusChip status={eventStatus.status} />
         </div>
         <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>
-          Goal: {MOCK.event.goal} · {formatDateShort(MOCK.event.date)}
+          Goal: {eventData.goal} · {formatDateShort(eventData.date)}
         </div>
         <div style={{ fontSize: 12, color: "#999" }}>
           {eventStatus.weeks !== null ? Math.round(eventStatus.weeks) + " weeks out" : "Add an event date"} · training{" "}
-          {MOCK.event.currentFreq}
+          {eventData.currentFreq}
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 10 }}>
           <EditLink />
         </div>
       </div>
 
-      <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        Status here is a first pass at the same pace math from onboarding's "Your Plan" — not yet reading real
-        logged history.
-      </p>
+      {(!weightData.isReal || !eventData.isReal) && (
+        <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
+          {!weightData.isReal && !eventData.isReal
+            ? "Showing placeholder data — complete onboarding and log a weight entry to see your real status here."
+            : !weightData.isReal
+            ? "Weight is showing placeholder data — log a weight entry and complete onboarding's weight goal to replace it."
+            : "Event is showing placeholder data — set an event goal in onboarding to replace it."}
+        </p>
+      )}
     </main>
   );
 }
