@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 // Mock data + mock "AI" chat matching for now — same pattern as Nutrition's
 // estimate. Real reasoning (a proper Exceptions/coach chat) is a later,
@@ -59,14 +60,38 @@ const EQUIPMENT_VARIANTS = {
   "Tricep dips": ["Bodyweight", "Assisted machine", "Bench"],
   "Hammer curls": ["Dumbbell", "Cable", "Resistance band"],
 };
-function getDefaultEquipment(name) {
-  const variants = EQUIPMENT_VARIANTS[name];
-  return variants ? variants[0] : null;
-}
-function getWeightDisplay(name, equipment) {
+function getWeightSuggestionText(name, equipment) {
   const spec = getExerciseSpec(name);
   if (equipment === "Bodyweight") return "Bodyweight";
   return spec.weight;
+}
+
+// Maps onboarding's "What do you have access to?" answers to which
+// equipment variants are realistic. Returns null (meaning "don't
+// filter, show everything") until onboarding access data is loaded.
+function getAvailableEquipmentSet(access) {
+  if (!access || access.length === 0) return null;
+  if (access.includes("Bodyweight only")) return new Set(["Bodyweight"]);
+  const set = new Set(["Bodyweight"]); // always available, needs no equipment
+  if (access.includes("Gym")) {
+    ["Barbell", "Smith machine", "Dumbbell (goblet)", "Dumbbell", "Machine press", "Cable row", "Machine row", "Kettlebell", "Machine", "Cable", "Assisted machine", "Bench"].forEach((e) => set.add(e));
+  }
+  if (access.includes("Home weights/bands")) {
+    ["Dumbbell (goblet)", "Dumbbell", "Kettlebell", "Resistance band", "Bench"].forEach((e) => set.add(e));
+  }
+  if (access.includes("Resistance bands")) set.add("Resistance band");
+  return set;
+}
+function getAvailableVariants(name, availableSet) {
+  const all = EQUIPMENT_VARIANTS[name];
+  if (!all) return null;
+  if (!availableSet) return all;
+  const filtered = all.filter((v) => availableSet.has(v));
+  return filtered.length > 0 ? filtered : all; // don't show an empty picker
+}
+function getDefaultEquipment(name, availableSet) {
+  const variants = getAvailableVariants(name, availableSet);
+  return variants ? variants[0] : null;
 }
 
 const LIFT_FOCUS = {
@@ -176,11 +201,11 @@ function getSegmentAlternates(type, slot) {
   return SEGMENT_ALTERNATES[type + ":" + slot] || [];
 }
 
-function getSteps(session) {
+function getSteps(session, availableSet) {
   if (session.type === "Lift") {
     return (session.exercises || []).map((name) => {
-      const equipment = (session.equipmentByExercise && session.equipmentByExercise[name]) || getDefaultEquipment(name);
-      return { kind: "exercise", name, equipment, ...getExerciseSpec(name), weight: getWeightDisplay(name, equipment) };
+      const equipment = (session.equipmentByExercise && session.equipmentByExercise[name]) || getDefaultEquipment(name, availableSet);
+      return { kind: "exercise", name, equipment, ...getExerciseSpec(name), weight: getWeightSuggestionText(name, equipment) };
     });
   }
   if (session.type === "Run" || session.type === "Swim" || session.type === "Yoga") {
@@ -319,13 +344,16 @@ function RestTimer({ seconds, onSkip }) {
   );
 }
 
-function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
-  const steps = getSteps(session);
+function WorkoutMode({ session, availableSet, todayIso, onUpdateSession, onFinish, onClose }) {
+  const steps = getSteps(session, availableSet);
   const [stepIndex, setStepIndex] = useState(0);
   const [setsDoneByStep, setSetsDoneByStep] = useState({});
   const [restRemaining, setRestRemaining] = useState(null);
   const [howToOpen, setHowToOpen] = useState(false);
   const [openPopover, setOpenPopover] = useState(null); // null | "workout" | "focus" | "exercise" | "equipment" | "segment"
+  const [lastLog, setLastLog] = useState(null); // most recent real weight/reps for this exercise, from history
+  const [weightInput, setWeightInput] = useState("");
+  const [repsInput, setRepsInput] = useState("");
 
   useEffect(() => {
     if (restRemaining === null || restRemaining <= 0) return;
@@ -336,6 +364,38 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
   const step = steps[stepIndex] || null;
   const isLastStep = stepIndex >= steps.length - 1;
   const setsDone = setsDoneByStep[stepIndex] || 0;
+  const hasProgress = stepIndex > 0 || Object.values(setsDoneByStep).some((v) => v > 0);
+
+  // Pull the real last-logged weight/reps for whichever exercise is
+  // currently up, so the suggestion is based on your own history, not
+  // just a generic library number.
+  useEffect(() => {
+    if (!step || step.kind !== "exercise") return;
+    let cancelled = false;
+    async function loadHistory() {
+      const { data } = await supabase
+        .from("exercise_logs")
+        .select("weight, reps")
+        .eq("exercise_name", step.name)
+        .order("created_at", { ascending: false })
+        .limit(1);
+      if (cancelled) return;
+      if (data && data.length > 0) {
+        setLastLog(data[0]);
+        setWeightInput(data[0].weight != null ? String(data[0].weight) : "");
+        setRepsInput(data[0].reps != null ? String(data[0].reps) : String(step.reps));
+      } else {
+        setLastLog(null);
+        setWeightInput("");
+        setRepsInput(String(step.reps));
+      }
+    }
+    loadHistory();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepIndex, step && step.name]);
 
   function goToStep(i) {
     setStepIndex(Math.max(0, Math.min(steps.length - 1, i)));
@@ -344,9 +404,22 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
     setOpenPopover(null);
   }
 
-  function handleLogSet() {
+  async function handleLogSet() {
     if (!step || step.kind !== "exercise") return;
     const next = setsDone + 1;
+    const weightVal = parseFloat(weightInput);
+    // Best-effort save — don't block the workout if this fails.
+    supabase
+      .from("exercise_logs")
+      .insert({
+        log_date: todayIso,
+        exercise_name: step.name,
+        equipment: step.equipment || null,
+        set_number: next,
+        weight: isNaN(weightVal) ? null : weightVal,
+        reps: repsInput || String(step.reps),
+      })
+      .then(() => {});
     setSetsDoneByStep((prev) => ({ ...prev, [stepIndex]: next }));
     if (next < step.sets) setRestRemaining(step.rest);
   }
@@ -436,9 +509,11 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
         <div style={{ fontSize: 13, color: "#777", marginBottom: 12 }}>{session.type} · {session.duration} min</div>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
-          <div onClick={() => setOpenPopover(openPopover === "workout" ? null : "workout")} style={smallBtnStyle()}>
-            🔀 Switch workout
-          </div>
+          {!hasProgress && (
+            <div onClick={() => setOpenPopover(openPopover === "workout" ? null : "workout")} style={smallBtnStyle()}>
+              🔀 Switch workout
+            </div>
+          )}
           {(session.type === "Lift" || session.type === "Run") && (
             <div onClick={() => setOpenPopover(openPopover === "focus" ? null : "focus")} style={smallBtnStyle()}>
               🎯 Change focus
@@ -461,7 +536,7 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
           )}
         </div>
 
-        {openPopover === "workout" && (
+        {openPopover === "workout" && !hasProgress && (
           <OptionsPopover title="Switch to…" options={ACTIVITY_TYPES} onPick={handleSwitchWorkout} onCustomSubmit={handleSwitchWorkoutCustom} />
         )}
         {openPopover === "focus" && (
@@ -483,7 +558,7 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
         {openPopover === "equipment" && step && step.kind === "exercise" && (
           <OptionsPopover
             title={"Do " + step.name + " with…"}
-            options={EQUIPMENT_VARIANTS[step.name] || []}
+            options={getAvailableVariants(step.name, availableSet) || []}
             onPick={handleChangeEquipment}
             onCustomSubmit={handleChangeEquipmentCustom}
           />
@@ -502,11 +577,37 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
             <div style={cardStyle(ACTIVITY_COLORS[session.type] || DEFAULT_COLOR)}>
               <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 6 }}>{step.name}</div>
               <div style={{ fontSize: 13, color: "#444", marginBottom: 4 }}>
-                Set {Math.min(setsDone + 1, step.sets)} of {step.sets} · {step.reps} reps
+                Set {Math.min(setsDone + 1, step.sets)} of {step.sets}
               </div>
-              <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Suggested weight: {step.weight}</div>
-              {step.equipment && <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Equipment: {step.equipment}</div>}
-              {!step.equipment && <div style={{ marginBottom: 10 }} />}
+              {step.equipment && <div style={{ fontSize: 12, color: "#666", marginBottom: 8 }}>Equipment: {step.equipment}</div>}
+              {lastLog ? (
+                <div style={{ fontSize: 11, color: "#999", marginBottom: 8 }}>
+                  Last time: {lastLog.weight != null ? lastLog.weight : "—"} · {lastLog.reps} reps
+                </div>
+              ) : (
+                <div style={{ fontSize: 11, color: "#999", marginBottom: 8 }}>No history yet — suggested starting point: {step.weight}, {step.reps} reps</div>
+              )}
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 4 }}>Weight</div>
+                  <input
+                    type="text"
+                    value={weightInput}
+                    onChange={(e) => setWeightInput(e.target.value)}
+                    placeholder={step.equipment === "Bodyweight" ? "Bodyweight" : step.weight}
+                    style={{ width: "100%", boxSizing: "border-box", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 4 }}>Reps</div>
+                  <input
+                    type="text"
+                    value={repsInput}
+                    onChange={(e) => setRepsInput(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box", padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }}
+                  />
+                </div>
+              </div>
 
               <div onClick={() => setHowToOpen((v) => !v)} style={{ fontSize: 12, color: "#2563eb", cursor: "pointer", marginBottom: 10 }}>
                 {howToOpen ? "▾ Hide how-to" : "▸ How do I do this?"}
@@ -570,6 +671,21 @@ export default function Trainer() {
   const [overrides, setOverrides] = useState({});
   const [workoutModeOpen, setWorkoutModeOpen] = useState(false);
   const [swapOpen, setSwapOpen] = useState(false);
+  const [access, setAccess] = useState(null); // null = not loaded yet, from onboarding's "What do you have access to?"
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAccess() {
+      const { data } = await supabase.from("profile").select("answers").order("updated_at", { ascending: false }).limit(1);
+      if (cancelled) return;
+      if (data && data.length > 0 && data[0].answers) setAccess(data[0].answers.access || []);
+    }
+    loadAccess();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const availableSet = getAvailableEquipmentSet(access);
 
   const isFuture = selectedDate > todayIso;
   const session = getSessionForDate(selectedDate, todayIso, overrides);
@@ -716,7 +832,7 @@ export default function Trainer() {
         <p style={{ fontSize: 13, color: "#666" }}>Nothing assigned — recovery day.</p>
       ) : (
         <div style={cardStyle("#eee")}>
-          {getSteps(session).map((s, i) => (
+          {getSteps(session, availableSet).map((s, i) => (
             <div key={i} style={{ fontSize: 13, color: "#444", padding: "6px 0", borderTop: i > 0 ? "1px solid #eee" : "none" }}>
               {s.kind === "exercise" ? s.name + (s.equipment ? " (" + s.equipment + ")" : "") + " — " + s.sets + " x " + s.reps : s.text}
             </div>
@@ -725,12 +841,20 @@ export default function Trainer() {
       )}
 
       <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        Still mock data and session-only (nothing saved to Supabase yet). Recommended weights are generic starting
-        points, not personalized to you yet, and chat-based swaps use simple keyword matching, not real reasoning.
+        Which equipment shows up by default now follows your onboarding "access" answers, and weight/reps suggestions
+        come from your real logged history once you have any — both save to Supabase. The day/week schedule itself is
+        still mock, and chat-based swaps use simple keyword matching, not real reasoning.
       </p>
 
       {workoutModeOpen && (
-        <WorkoutMode session={session} onUpdateSession={updateSession} onFinish={handleFinish} onClose={() => setWorkoutModeOpen(false)} />
+        <WorkoutMode
+          session={session}
+          availableSet={availableSet}
+          todayIso={todayIso}
+          onUpdateSession={updateSession}
+          onFinish={handleFinish}
+          onClose={() => setWorkoutModeOpen(false)}
+        />
       )}
     </main>
   );
