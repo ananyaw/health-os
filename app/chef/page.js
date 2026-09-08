@@ -1,5 +1,6 @@
 "use client";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { supabase } from "../../lib/supabaseClient";
 
 // Mock data for now — same pattern as Trainer's first draft. Real
 // persistence, and reading real kitchen/pantry equipment from onboarding
@@ -335,12 +336,181 @@ function CookMode({ dayPlan, onUpdateDay, onFinish, onClose }) {
   );
 }
 
+function pickRandomDish(exclude) {
+  const keys = Object.keys(DISH_LIBRARY).filter((k) => k !== exclude);
+  return keys[Math.floor(Math.random() * keys.length)];
+}
+function pickHighestProteinDish() {
+  return Object.keys(DISH_LIBRARY).reduce((best, name) => (DISH_LIBRARY[name].protein > DISH_LIBRARY[best].protein ? name : best));
+}
+function findBestIngredientMatch(haveText, exclude) {
+  const words = haveText
+    .toLowerCase()
+    .split(/[,\n]/)
+    .map((w) => w.trim())
+    .filter(Boolean);
+  if (words.length === 0) return null;
+  let bestName = null;
+  let bestScore = 0;
+  Object.keys(DISH_LIBRARY)
+    .filter((name) => name !== exclude)
+    .forEach((name) => {
+      const score = DISH_LIBRARY[name].ingredients.reduce((sum, ing) => sum + (words.some((w) => ing.toLowerCase().includes(w)) ? 1 : 0), 0);
+      if (score > bestScore) {
+        bestScore = score;
+        bestName = name;
+      }
+    });
+  return bestName;
+}
+
+// Lets you turn any day — not just template-defined prep days — into a
+// real cook day, with a few guided ways to land on what to make.
+function PlanCookModal({ proteinBiasName, onConfirm, onClose }) {
+  const [mode, setMode] = useState(null); // null | "forme" | "have" | "inspire"
+  const [haveText, setHaveText] = useState("");
+  const [suggestion, setSuggestion] = useState(null);
+  const [showChat, setShowChat] = useState(false);
+  const [chatText, setChatText] = useState("");
+
+  function handleChooseForMe() {
+    setMode("forme");
+    setSuggestion(proteinBiasName || pickRandomDish());
+  }
+  function handleInspireMe() {
+    setMode("inspire");
+    setSuggestion(pickRandomDish());
+  }
+  function handleShuffle() {
+    setSuggestion((prev) => pickRandomDish(prev));
+  }
+  function handleFindMatch() {
+    setSuggestion((prev) => findBestIngredientMatch(haveText, prev) || pickRandomDish(prev));
+  }
+  function submitChat() {
+    if (!chatText.trim()) return;
+    const matched = matchFromText(chatText, Object.keys(DISH_LIBRARY));
+    onConfirm(matched || chatText.trim());
+  }
+
+  const suggestionSpec = suggestion ? getDishSpec(suggestion) : null;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.4)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 55 }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: "#fff", borderRadius: "16px 16px 0 0", padding: 24, width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", boxSizing: "border-box" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div style={{ fontSize: 18, fontWeight: 700 }}>What are you looking for?</div>
+          <span onClick={onClose} style={{ fontSize: 20, color: "#999", cursor: "pointer" }}>×</span>
+        </div>
+
+        {mode === null && (
+          <>
+            <div onClick={handleChooseForMe} style={{ ...cardStyle("#ea580c"), cursor: "pointer", marginBottom: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>🎲 Choose for me</div>
+              <div style={{ fontSize: 12, color: "#999", marginTop: 2 }}>A solid default — leans toward your protein target if we know it.</div>
+            </div>
+            <div onClick={() => setMode("have")} style={{ ...cardStyle("#ea580c"), cursor: "pointer", marginBottom: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>🥕 What can I make with what I have?</div>
+              <div style={{ fontSize: 12, color: "#999", marginTop: 2 }}>Tell me what's in the fridge/pantry.</div>
+            </div>
+            <div onClick={handleInspireMe} style={{ ...cardStyle("#ea580c"), cursor: "pointer", marginBottom: 10 }}>
+              <div style={{ fontWeight: 600, fontSize: 14 }}>✨ Inspire me</div>
+              <div style={{ fontSize: 12, color: "#999", marginTop: 2 }}>Something different from the usual rotation.</div>
+            </div>
+            <div onClick={() => setShowChat((v) => !v)} style={{ fontSize: 13, color: "#2563eb", cursor: "pointer", marginTop: 4 }}>
+              💬 Or tell me exactly what you want
+            </div>
+            {showChat && (
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                <input
+                  type="text"
+                  value={chatText}
+                  onChange={(e) => setChatText(e.target.value)}
+                  placeholder="e.g. something spicy, or a specific dish"
+                  style={{ flex: 1, padding: 8, borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }}
+                />
+                <button onClick={submitChat} style={{ padding: "8px 14px", background: "#111", color: "#fff", border: "none", borderRadius: 8, fontSize: 13, cursor: "pointer" }}>
+                  Go
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {mode === "have" && !suggestion && (
+          <div>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 6 }}>What do you have? (comma separated)</div>
+            <input
+              type="text"
+              value={haveText}
+              onChange={(e) => setHaveText(e.target.value)}
+              placeholder="e.g. chicken, rice, cucumber"
+              style={{ width: "100%", boxSizing: "border-box", padding: 10, borderRadius: 8, border: "1px solid #ddd", fontSize: 14, marginBottom: 12 }}
+            />
+            <button
+              onClick={handleFindMatch}
+              style={{ width: "100%", padding: 12, background: "#111", color: "#fff", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+            >
+              Find a match
+            </button>
+          </div>
+        )}
+
+        {suggestion && (
+          <div style={cardStyle("#16a34a")}>
+            <div style={{ fontSize: 12, color: "#999", marginBottom: 4 }}>How about:</div>
+            <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{suggestion}</div>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 14 }}>
+              {suggestionSpec.forMeal} · {suggestionSpec.calories} kcal · {suggestionSpec.protein}g protein
+            </div>
+            <button
+              onClick={() => onConfirm(suggestion)}
+              style={{ width: "100%", padding: 14, background: "#111", color: "#fff", border: "none", borderRadius: 10, fontSize: 15, fontWeight: 600, cursor: "pointer", marginBottom: 8 }}
+            >
+              Cook this
+            </button>
+            <button
+              onClick={() => (mode === "have" ? handleFindMatch() : handleShuffle())}
+              style={{ width: "100%", padding: 10, background: "#fff", border: "1px solid #ddd", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+            >
+              Show another
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function Chef() {
   const todayIso = toLocalISODate(new Date());
   const [selectedDate, setSelectedDate] = useState(todayIso);
   const [overrides, setOverrides] = useState({});
   const [cookModeOpen, setCookModeOpen] = useState(false);
   const [shoppingOpen, setShoppingOpen] = useState(false);
+  const [planModalOpen, setPlanModalOpen] = useState(false);
+  const [proteinBiasName, setProteinBiasName] = useState(null); // "Choose for me" leans toward this if we know your target
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadProfile() {
+      const { data } = await supabase.from("profile").select("answers").order("updated_at", { ascending: false }).limit(1);
+      if (cancelled) return;
+      if (data && data.length > 0 && data[0].answers && data[0].answers.targetProtein) {
+        setProteinBiasName(pickHighestProteinDish());
+      }
+    }
+    loadProfile();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dayPlan = getDayPlanForDate(selectedDate, todayIso, overrides);
   const isFuture = selectedDate > todayIso;
@@ -348,6 +518,10 @@ export default function Chef() {
 
   function updateDay(next) {
     setOverrides((prev) => ({ ...prev, [selectedDate]: next }));
+  }
+  function handleConfirmCookPlan(dishName) {
+    updateDay({ type: "prep", dishes: [{ name: dishName, servings: getDishSpec(dishName).servings }], status: "not_started" });
+    setPlanModalOpen(false);
   }
   function handleOpenCook() {
     if (isFuture || !isPrepDay) return;
@@ -473,10 +647,27 @@ export default function Chef() {
       ) : (
         <div style={cardStyle("#999")}>
           <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 6 }}>Nothing to cook today</div>
-          <p style={{ fontSize: 13, color: "#666", margin: 0 }}>
+          <p style={{ fontSize: 13, color: "#666", margin: "0 0 12px" }}>
             Next prep day: {getNextPrepDateLabel(selectedDate, todayIso)}. Check the Nutritionist tab for what's available to
-            eat today.
+            eat today — or plan something new for this day.
           </p>
+          <button
+            onClick={() => setPlanModalOpen(true)}
+            disabled={isFuture}
+            style={{
+              width: "100%",
+              padding: 14,
+              background: isFuture ? "#eee" : "#111",
+              color: isFuture ? "#999" : "#fff",
+              border: "none",
+              borderRadius: 10,
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: isFuture ? "default" : "pointer",
+            }}
+          >
+            🍳 Plan something to cook
+          </button>
         </div>
       )}
 
@@ -498,12 +689,17 @@ export default function Chef() {
       )}
 
       <p style={{ fontSize: 12, color: "#999", marginTop: 8 }}>
-        Chef handles planning and cooking; the Nutritionist tab now shows what's available to eat each day. Still mock
-        data and session-only (nothing saved to Supabase yet), and doesn't yet account for your real kitchen equipment
-        or pantry — onboarding doesn't collect that yet.
+        Chef handles planning and cooking; the Nutritionist tab now shows what's available to eat each day. Any day
+        without a plan can be turned into a real cook day via "Plan something to cook." Still mock data and
+        session-only (nothing saved to Supabase yet), and doesn't yet account for your real kitchen equipment or
+        pantry — onboarding doesn't collect that yet, so "what I have" matching is just a naive text match against
+        recipe ingredients, not a real inventory.
       </p>
 
       {cookModeOpen && <CookMode dayPlan={dayPlan} onUpdateDay={updateDay} onFinish={handleFinishCook} onClose={() => setCookModeOpen(false)} />}
+      {planModalOpen && (
+        <PlanCookModal proteinBiasName={proteinBiasName} onConfirm={handleConfirmCookPlan} onClose={() => setPlanModalOpen(false)} />
+      )}
     </main>
   );
 }
