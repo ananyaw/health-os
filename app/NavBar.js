@@ -2,11 +2,14 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+// Persona-named to match the multi-agent framing — each tab is "which
+// agent do I want," not "which feature." Goals and Home stay activity-
+// named since they aren't agent personas.
 const TABS = [
   { href: "/home", label: "Home", icon: "🏠" },
-  { href: "/nutrition", label: "Nutrition", icon: "🍽️" },
+  { href: "/nutritionist", label: "Nutritionist", icon: "🍽️" },
   { href: "/trainer", label: "Trainer", icon: "💪" },
-  { href: "/mealprep", label: "Meal-prep", icon: "🧑‍🍳" },
+  { href: "/chef", label: "Chef", icon: "🧑‍🍳" },
   { href: "/goals", label: "Goals", icon: "🎯" },
 ];
 
