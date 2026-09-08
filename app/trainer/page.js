@@ -44,24 +44,49 @@ function getExerciseSpec(name) {
   return EXERCISE_LIBRARY[name] || { sets: 3, reps: "10", weight: "Moderate weight — adjust by feel", rest: 60, howTo: "Details coming soon for this one — look up proper form before trying it the first time." };
 }
 
+// Equipment variants per exercise — only listed where it genuinely
+// changes anything. Exercises with no entry here are bodyweight-only,
+// so no equipment picker shows for them.
+const EQUIPMENT_VARIANTS = {
+  Squat: ["Barbell", "Smith machine", "Dumbbell (goblet)", "Bodyweight"],
+  "Bench press": ["Barbell", "Smith machine", "Dumbbell", "Machine press"],
+  "Overhead press": ["Barbell", "Dumbbell", "Smith machine", "Machine press"],
+  "Bent-over row": ["Barbell", "Dumbbell", "Cable row", "Machine row"],
+  "Romanian deadlift": ["Barbell", "Dumbbell", "Kettlebell"],
+  "Walking lunges": ["Dumbbell", "Barbell", "Bodyweight"],
+  "Calf raises": ["Machine", "Dumbbell", "Bodyweight"],
+  "Bicep curls": ["Dumbbell", "Barbell", "Cable", "Resistance band"],
+  "Tricep dips": ["Bodyweight", "Assisted machine", "Bench"],
+  "Hammer curls": ["Dumbbell", "Cable", "Resistance band"],
+};
+function getDefaultEquipment(name) {
+  const variants = EQUIPMENT_VARIANTS[name];
+  return variants ? variants[0] : null;
+}
+function getWeightDisplay(name, equipment) {
+  const spec = getExerciseSpec(name);
+  if (equipment === "Bodyweight") return "Bodyweight";
+  return spec.weight;
+}
+
 const LIFT_FOCUS = {
   "Upper body": ["Bench press", "Bent-over row", "Overhead press", "Plank"],
   "Lower body": ["Squat", "Romanian deadlift", "Walking lunges", "Calf raises"],
   "Full body": ["Squat", "Bench press", "Bent-over row", "Plank"],
-  "Arms": ["Bicep curls", "Tricep dips", "Hammer curls", "Push-ups"],
-  "Core": ["Plank", "Russian twists", "Leg raises", "Bicycle crunches"],
+  Arms: ["Bicep curls", "Tricep dips", "Hammer curls", "Push-ups"],
+  Core: ["Plank", "Russian twists", "Leg raises", "Bicycle crunches"],
 };
 const FOCUS_OPTIONS_LIFT = Object.keys(LIFT_FOCUS);
 
 const ALTERNATES = {
   "Bench press": ["Push-ups", "Dumbbell press", "Incline press"],
-  "Squat": ["Goblet squat", "Leg press", "Lunges"],
+  Squat: ["Goblet squat", "Leg press", "Lunges"],
   "Bent-over row": ["Seated cable row", "Lat pulldown"],
   "Overhead press": ["Arnold press", "Lateral raises"],
   "Romanian deadlift": ["Leg curls", "Good mornings"],
   "Walking lunges": ["Step-ups", "Bulgarian split squats"],
   "Calf raises": ["Seated calf raises"],
-  "Plank": ["Side plank", "Dead bug"],
+  Plank: ["Side plank", "Dead bug"],
   "Bicep curls": ["Concentration curls"],
   "Tricep dips": ["Skull crushers"],
   "Hammer curls": ["Cable curls"],
@@ -71,26 +96,97 @@ const ALTERNATES = {
   "Bicycle crunches": ["Mountain climbers"],
 };
 
-const RUN_FOCUS = {
-  Easy: (d) => ["5 min easy warm-up jog", Math.max(10, d - 10) + " min steady pace, conversational effort", "5 min cooldown walk + stretch"],
-  Tempo: (d) => ["8 min easy warm-up jog", Math.max(10, d - 16) + " min at tempo pace (comfortably hard)", "8 min cooldown jog"],
-  "Long run": (d) => ["10 min easy warm-up jog", Math.max(10, d - 20) + " min steady long-run pace", "10 min cooldown walk + stretch"],
-  "Sprints/Intervals": (d) => ["10 min warm-up jog", "8 x 200m sprint @ hard effort, 90 sec walk recovery between", "10 min cooldown jog"],
-};
-const FOCUS_OPTIONS_RUN = Object.keys(RUN_FOCUS);
-function getRunSegments(focus, duration) {
-  const fn = RUN_FOCUS[focus] || RUN_FOCUS.Easy;
-  return fn(duration);
+// Segments are now slot-tagged objects, not plain strings, so any one
+// segment can be swapped without regenerating the whole session.
+function buildRunSegments(focus, duration) {
+  if (focus === "Long run") {
+    return [
+      { slot: "warmup", text: "10 min easy warm-up jog" },
+      { slot: "main", text: Math.max(10, duration - 20) + " min steady long-run pace" },
+      { slot: "cooldown", text: "10 min cooldown walk + stretch" },
+    ];
+  }
+  if (focus === "Tempo") {
+    return [
+      { slot: "warmup", text: "8 min easy warm-up jog" },
+      { slot: "main", text: Math.max(10, duration - 16) + " min at tempo pace (comfortably hard)" },
+      { slot: "cooldown", text: "8 min cooldown jog" },
+    ];
+  }
+  if (focus === "Sprints/Intervals") {
+    return [
+      { slot: "warmup", text: "10 min warm-up jog" },
+      { slot: "main", text: "8 x 200m sprint @ hard effort, 90 sec walk recovery between" },
+      { slot: "cooldown", text: "10 min cooldown jog" },
+    ];
+  }
+  return [
+    { slot: "warmup", text: "5 min easy warm-up jog" },
+    { slot: "main", text: Math.max(10, duration - 10) + " min steady pace, conversational effort" },
+    { slot: "cooldown", text: "5 min cooldown walk + stretch" },
+  ];
 }
-const SWIM_SEGMENTS = ["400m warm-up, easy pace", "8 x 100m freestyle, 20 sec rest", "4 x 50m kick, 15 sec rest", "200m cooldown, easy pace"];
-const YOGA_SEGMENTS = ["Sun Salutation A x5 (10 min)", "Standing sequence: Warrior I/II, Triangle (10 min)", "Balance poses: Tree, Half Moon (5 min)", "Cool-down stretches + Savasana (10 min)"];
+function buildSwimSegments() {
+  return [
+    { slot: "warmup", text: "400m warm-up, easy pace" },
+    { slot: "main1", text: "8 x 100m freestyle, 20 sec rest" },
+    { slot: "main2", text: "4 x 50m kick, 15 sec rest" },
+    { slot: "cooldown", text: "200m cooldown, easy pace" },
+  ];
+}
+function buildYogaSegments() {
+  return [
+    { slot: "seq1", text: "Sun Salutation A x5 (10 min)" },
+    { slot: "seq2", text: "Standing sequence: Warrior I/II, Triangle (10 min)" },
+    { slot: "seq3", text: "Balance poses: Tree, Half Moon (5 min)" },
+    { slot: "cooldown", text: "Cool-down stretches + Savasana (10 min)" },
+  ];
+}
+function buildSegmentsForType(type, focus, duration) {
+  if (type === "Run") return buildRunSegments(focus, duration);
+  if (type === "Swim") return buildSwimSegments();
+  if (type === "Yoga") return buildYogaSegments();
+  return [];
+}
+
+const FOCUS_OPTIONS_RUN = ["Easy", "Tempo", "Long run", "Sprints/Intervals"];
+
+// Alternate content per segment slot — generic enough to reuse across
+// focuses, since a fully tailored list per focus x slot would be a lot
+// of hand-written content for what's still a mock pass.
+const SEGMENT_ALTERNATES = {
+  "Run:warmup": ["5 min easy jog", "8 min easy jog", "10 min easy jog", "5 min dynamic stretching only"],
+  "Run:main": [
+    "Steady pace, conversational effort",
+    "Tempo pace, comfortably hard",
+    "Intervals: 200m sprints, 90 sec recovery",
+    "Fartlek: alternate 2 min hard / 2 min easy",
+  ],
+  "Run:cooldown": ["5 min walk + stretch", "8 min walk + stretch", "10 min walk + stretch", "Skip cooldown"],
+  "Swim:warmup": ["300m warm-up, easy pace", "400m warm-up, easy pace", "500m warm-up, easy pace"],
+  "Swim:main1": ["8 x 100m freestyle, 20 sec rest", "6 x 100m freestyle, 30 sec rest", "10 x 50m freestyle, 15 sec rest", "4 x 200m freestyle, 30 sec rest"],
+  "Swim:main2": ["4 x 50m kick, 15 sec rest", "6 x 50m kick, 15 sec rest", "4 x 25m kick, 10 sec rest", "Skip kick set"],
+  "Swim:cooldown": ["200m cooldown, easy pace", "300m cooldown, easy pace", "100m cooldown, easy pace"],
+  "Yoga:seq1": ["Sun Salutation A x5 (10 min)", "Sun Salutation A x3 (6 min)", "Sun Salutation B x5 (12 min)"],
+  "Yoga:seq2": ["Standing sequence: Warrior I/II, Triangle (10 min)", "Standing sequence: Warrior III, Chair (10 min)"],
+  "Yoga:seq3": ["Balance poses: Tree, Half Moon (5 min)", "Balance poses: Eagle, Dancer (5 min)"],
+  "Yoga:cooldown": ["Cool-down stretches + Savasana (10 min)", "Cool-down stretches + Savasana (15 min)"],
+};
+function getSegmentAlternates(type, slot) {
+  return SEGMENT_ALTERNATES[type + ":" + slot] || [];
+}
 
 function getSteps(session) {
-  if (session.type === "Lift") return (session.exercises || []).map((name) => ({ kind: "exercise", name, ...getExerciseSpec(name) }));
-  if (session.type === "Run") return getRunSegments(session.focus, session.duration).map((text) => ({ kind: "segment", text }));
-  if (session.type === "Swim") return SWIM_SEGMENTS.map((text) => ({ kind: "segment", text }));
-  if (session.type === "Yoga") return YOGA_SEGMENTS.map((text) => ({ kind: "segment", text }));
-  if (session.customLabel) return [{ kind: "segment", text: "Custom: " + session.customLabel + " — log it however works for you." }];
+  if (session.type === "Lift") {
+    return (session.exercises || []).map((name) => {
+      const equipment = (session.equipmentByExercise && session.equipmentByExercise[name]) || getDefaultEquipment(name);
+      return { kind: "exercise", name, equipment, ...getExerciseSpec(name), weight: getWeightDisplay(name, equipment) };
+    });
+  }
+  if (session.type === "Run" || session.type === "Swim" || session.type === "Yoga") {
+    return (session.segments || []).map((seg) => ({ kind: "segment", slot: seg.slot, text: seg.text }));
+  }
+  if (session.customLabel) return [{ kind: "segment", slot: "custom", text: "Custom: " + session.customLabel + " — log it however works for you." }];
   return [];
 }
 
@@ -125,8 +221,12 @@ function buildSessionForType(type, focus) {
   if (type === "Lift") {
     base.focus = focus || "Upper body";
     base.exercises = [...(LIFT_FOCUS[base.focus] || LIFT_FOCUS["Upper body"])];
+    base.equipmentByExercise = {};
   } else if (type === "Run") {
     base.focus = focus || "Easy";
+    base.segments = buildSegmentsForType("Run", base.focus, base.duration);
+  } else if (type === "Swim" || type === "Yoga") {
+    base.segments = buildSegmentsForType(type);
   }
   return base;
 }
@@ -137,6 +237,7 @@ function getSessionForDate(iso, todayIso, overrides) {
   const status = iso < todayIso && template.type !== "Rest" ? "done" : "not_started";
   const session = buildSessionForType(template.type, template.focus);
   session.duration = template.duration;
+  if (session.type === "Run") session.segments = buildSegmentsForType("Run", session.focus, session.duration);
   session.status = status;
   return session;
 }
@@ -224,7 +325,7 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
   const [setsDoneByStep, setSetsDoneByStep] = useState({});
   const [restRemaining, setRestRemaining] = useState(null);
   const [howToOpen, setHowToOpen] = useState(false);
-  const [openPopover, setOpenPopover] = useState(null); // null | "workout" | "focus" | "exercise"
+  const [openPopover, setOpenPopover] = useState(null); // null | "workout" | "focus" | "exercise" | "equipment" | "segment"
 
   useEffect(() => {
     if (restRemaining === null || restRemaining <= 0) return;
@@ -271,9 +372,9 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
 
   function handleChangeFocus(focus) {
     if (session.type === "Lift") {
-      onUpdateSession({ ...session, focus, exercises: [...(LIFT_FOCUS[focus] || LIFT_FOCUS["Upper body"])] });
+      onUpdateSession({ ...session, focus, exercises: [...(LIFT_FOCUS[focus] || LIFT_FOCUS["Upper body"])], equipmentByExercise: {} });
     } else if (session.type === "Run") {
-      onUpdateSession({ ...session, focus });
+      onUpdateSession({ ...session, focus, segments: buildSegmentsForType("Run", focus, session.duration) });
     }
     setOpenPopover(null);
     goToStep(0);
@@ -285,8 +386,7 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
     if (matched) {
       handleChangeFocus(matched);
     } else if (session.type === "Lift") {
-      // Unknown focus by text — treat it as a one-off single custom exercise.
-      onUpdateSession({ ...session, focus: text, exercises: [text] });
+      onUpdateSession({ ...session, focus: text, exercises: [text], equipmentByExercise: {} });
       setOpenPopover(null);
       goToStep(0);
       setSetsDoneByStep({});
@@ -303,6 +403,24 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
   }
   function handleSwitchExerciseCustom(text) {
     handleSwitchExercise(text);
+  }
+
+  function handleChangeEquipment(equipment) {
+    const nextMap = { ...(session.equipmentByExercise || {}), [step.name]: equipment };
+    onUpdateSession({ ...session, equipmentByExercise: nextMap });
+    setOpenPopover(null);
+  }
+  function handleChangeEquipmentCustom(text) {
+    handleChangeEquipment(text);
+  }
+
+  function handleSwitchSegment(newText) {
+    const nextSegments = session.segments.map((seg, i) => (i === stepIndex ? { ...seg, text: newText } : seg));
+    onUpdateSession({ ...session, segments: nextSegments });
+    setOpenPopover(null);
+  }
+  function handleSwitchSegmentCustom(text) {
+    handleSwitchSegment(text);
   }
 
   return (
@@ -331,6 +449,16 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
               🔁 Switch this exercise
             </div>
           )}
+          {step && step.kind === "exercise" && EQUIPMENT_VARIANTS[step.name] && (
+            <div onClick={() => setOpenPopover(openPopover === "equipment" ? null : "equipment")} style={smallBtnStyle()}>
+              🛠 Equipment
+            </div>
+          )}
+          {step && step.kind === "segment" && getSegmentAlternates(session.type, step.slot).length > 0 && (
+            <div onClick={() => setOpenPopover(openPopover === "segment" ? null : "segment")} style={smallBtnStyle()}>
+              🔁 Switch this segment
+            </div>
+          )}
         </div>
 
         {openPopover === "workout" && (
@@ -352,6 +480,22 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
             onCustomSubmit={handleSwitchExerciseCustom}
           />
         )}
+        {openPopover === "equipment" && step && step.kind === "exercise" && (
+          <OptionsPopover
+            title={"Do " + step.name + " with…"}
+            options={EQUIPMENT_VARIANTS[step.name] || []}
+            onPick={handleChangeEquipment}
+            onCustomSubmit={handleChangeEquipmentCustom}
+          />
+        )}
+        {openPopover === "segment" && step && step.kind === "segment" && (
+          <OptionsPopover
+            title="Swap this segment for…"
+            options={getSegmentAlternates(session.type, step.slot)}
+            onPick={handleSwitchSegment}
+            onCustomSubmit={handleSwitchSegmentCustom}
+          />
+        )}
 
         <div style={{ marginTop: 20 }}>
           {step && step.kind === "exercise" && (
@@ -360,7 +504,9 @@ function WorkoutMode({ session, onUpdateSession, onFinish, onClose }) {
               <div style={{ fontSize: 13, color: "#444", marginBottom: 4 }}>
                 Set {Math.min(setsDone + 1, step.sets)} of {step.sets} · {step.reps} reps
               </div>
-              <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Suggested weight: {step.weight}</div>
+              <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Suggested weight: {step.weight}</div>
+              {step.equipment && <div style={{ fontSize: 12, color: "#666", marginBottom: 10 }}>Equipment: {step.equipment}</div>}
+              {!step.equipment && <div style={{ marginBottom: 10 }} />}
 
               <div onClick={() => setHowToOpen((v) => !v)} style={{ fontSize: 12, color: "#2563eb", cursor: "pointer", marginBottom: 10 }}>
                 {howToOpen ? "▾ Hide how-to" : "▸ How do I do this?"}
@@ -572,7 +718,7 @@ export default function Trainer() {
         <div style={cardStyle("#eee")}>
           {getSteps(session).map((s, i) => (
             <div key={i} style={{ fontSize: 13, color: "#444", padding: "6px 0", borderTop: i > 0 ? "1px solid #eee" : "none" }}>
-              {s.kind === "exercise" ? s.name + " — " + s.sets + " x " + s.reps : s.text}
+              {s.kind === "exercise" ? s.name + (s.equipment ? " (" + s.equipment + ")" : "") + " — " + s.sets + " x " + s.reps : s.text}
             </div>
           ))}
         </div>
