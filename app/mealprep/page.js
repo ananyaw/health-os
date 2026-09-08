@@ -99,7 +99,7 @@ function formatDateLabel(iso, todayIso) {
 }
 
 function buildDayPlan(type, dishNames) {
-  return { type, dishNames: [...dishNames], status: "not_started" };
+  return { type, dishes: dishNames.map((name) => ({ name, servings: getDishSpec(name).servings })), status: "not_started" };
 }
 function getDayPlanForDate(iso, todayIso, overrides) {
   if (overrides[iso]) return overrides[iso];
@@ -172,6 +172,24 @@ function getDishSpec(name) {
   return DISH_LIBRARY[name] || { forMeal: "—", calories: 0, protein: 0, servings: 4, ingredients: [], steps: ["Details coming soon for this one."] };
 }
 
+// Figures out whether free-text input to "Alter this dish" means swap
+// to a different dish, or a servings tweak — mocked keyword/number
+// matching, same pattern as everywhere else in the app.
+function resolveAlterCustom(text, currentServings) {
+  const dishMatch = matchFromText(text, Object.keys(DISH_LIBRARY));
+  if (dishMatch) return { kind: "swap", name: dishMatch };
+  const numMatch = text.match(/\d+/);
+  if (numMatch) return { kind: "servings", servings: Math.max(1, parseInt(numMatch[0], 10)) };
+  const lower = text.toLowerCase();
+  if (lower.includes("more") || lower.includes("bigger") || lower.includes("extra")) {
+    return { kind: "servings", servings: currentServings + 2 };
+  }
+  if (lower.includes("less") || lower.includes("fewer") || lower.includes("smaller")) {
+    return { kind: "servings", servings: Math.max(1, currentServings - 2) };
+  }
+  return { kind: "swap", name: text }; // fallback: treat as a literal custom dish name
+}
+
 // Step-by-step cooking mode, mirroring Trainer's Workout Mode: one dish
 // at a time, ingredients then steps as a checklist, then the next dish.
 function CookMode({ dayPlan, onUpdateDay, onFinish, onClose }) {
@@ -179,9 +197,11 @@ function CookMode({ dayPlan, onUpdateDay, onFinish, onClose }) {
   const [checksByDish, setChecksByDish] = useState({});
   const [openPopover, setOpenPopover] = useState(null); // null | "swap"
 
-  const dishName = dayPlan.dishNames[dishIndex];
+  const dishEntry = dayPlan.dishes[dishIndex];
+  const dishName = dishEntry.name;
+  const currentServings = dishEntry.servings;
   const dish = getDishSpec(dishName);
-  const isLastDish = dishIndex >= dayPlan.dishNames.length - 1;
+  const isLastDish = dishIndex >= dayPlan.dishes.length - 1;
   const checks = checksByDish[dishIndex] || {};
   const totalItems = dish.ingredients.length + dish.steps.length;
   const doneCount = Object.values(checks).filter(Boolean).length;
@@ -190,19 +210,31 @@ function CookMode({ dayPlan, onUpdateDay, onFinish, onClose }) {
     setChecksByDish((prev) => ({ ...prev, [dishIndex]: { ...(prev[dishIndex] || {}), [key]: !((prev[dishIndex] || {})[key]) } }));
   }
   function goToDish(i) {
-    setDishIndex(Math.max(0, Math.min(dayPlan.dishNames.length - 1, i)));
+    setDishIndex(Math.max(0, Math.min(dayPlan.dishes.length - 1, i)));
     setOpenPopover(null);
   }
   function handleSwapDish(newName) {
-    const nextDishes = [...dayPlan.dishNames];
-    nextDishes[dishIndex] = newName;
-    onUpdateDay({ ...dayPlan, dishNames: nextDishes });
+    const nextDishes = [...dayPlan.dishes];
+    nextDishes[dishIndex] = { name: newName, servings: getDishSpec(newName).servings };
+    onUpdateDay({ ...dayPlan, dishes: nextDishes });
     setChecksByDish((prev) => ({ ...prev, [dishIndex]: {} }));
     setOpenPopover(null);
   }
-  function handleSwapDishCustom(text) {
-    const matched = matchFromText(text, Object.keys(DISH_LIBRARY));
-    handleSwapDish(matched || text);
+  function handleServingsChange(newServings) {
+    const nextDishes = [...dayPlan.dishes];
+    nextDishes[dishIndex] = { ...nextDishes[dishIndex], servings: newServings };
+    onUpdateDay({ ...dayPlan, dishes: nextDishes });
+    setOpenPopover(null);
+  }
+  function handleAlterPick(option) {
+    if (option === "More servings") return handleServingsChange(currentServings + 2);
+    if (option === "Fewer servings") return handleServingsChange(Math.max(1, currentServings - 2));
+    return handleSwapDish(option);
+  }
+  function handleAlterCustom(text) {
+    const resolved = resolveAlterCustom(text, currentServings);
+    if (resolved.kind === "servings") handleServingsChange(resolved.servings);
+    else handleSwapDish(resolved.name);
   }
 
   return (
@@ -210,25 +242,30 @@ function CookMode({ dayPlan, onUpdateDay, onFinish, onClose }) {
       <div style={{ padding: 24, maxWidth: 480, margin: "0 auto" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
           <div style={{ fontSize: 12, color: "#999" }}>
-            Dish {dishIndex + 1} of {dayPlan.dishNames.length}
+            Dish {dishIndex + 1} of {dayPlan.dishes.length}
           </div>
           <span onClick={onClose} style={{ fontSize: 20, color: "#999", cursor: "pointer" }}>×</span>
         </div>
         <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 2 }}>{dishName}</div>
         <div style={{ fontSize: 13, color: "#777", marginBottom: 12 }}>
-          {dish.forMeal} · {dish.calories} kcal/serving · {dish.protein}g protein · serves {dish.servings}
+          {dish.forMeal} · {dish.calories} kcal/serving · {dish.protein}g protein · serves {currentServings}
         </div>
 
-        <div onClick={() => setOpenPopover(openPopover === "swap" ? null : "swap")} style={{ ...smallBtnStyle(), display: "inline-block", marginBottom: 4 }}>
-          🔁 Swap this dish
+        <div onClick={() => setOpenPopover(openPopover === "alter" ? null : "alter")} style={{ ...smallBtnStyle(), display: "inline-block", marginBottom: 4 }}>
+          ✏️ Alter this dish
         </div>
-        {openPopover === "swap" && (
+        {openPopover === "alter" && (
           <OptionsPopover
-            title="Swap for…"
-            options={Object.keys(DISH_LIBRARY).filter((n) => n !== dishName)}
-            onPick={handleSwapDish}
-            onCustomSubmit={handleSwapDishCustom}
+            title="Alter this dish…"
+            options={["More servings", "Fewer servings", ...Object.keys(DISH_LIBRARY).filter((n) => n !== dishName)]}
+            onPick={handleAlterPick}
+            onCustomSubmit={handleAlterCustom}
           />
+        )}
+        {dish.ingredients.length > 0 && (
+          <p style={{ fontSize: 11, color: "#999", marginTop: 6, marginBottom: 0 }}>
+            Ingredient amounts below are for the original recipe size — adjust while cooking if you've changed servings.
+          </p>
         )}
 
         <div style={{ marginTop: 16 }}>
@@ -323,7 +360,7 @@ export default function Mealprep() {
   for (let i = 0; i < 7; i++) {
     const iso = offsetDate(i, weekStart);
     const plan = getDayPlanForDate(iso, todayIso, overrides);
-    if (plan.type === "prep") plan.dishNames.forEach((n) => prepDishNames.add(n));
+    if (plan.type === "prep") plan.dishes.forEach((d) => prepDishNames.add(d.name));
   }
   const allIngredients = [];
   prepDishNames.forEach((name) => {
@@ -399,11 +436,11 @@ export default function Mealprep() {
         </div>
 
         <div style={{ marginTop: 10 }}>
-          {dayPlan.dishNames.map((name, i) => {
-            const dish = getDishSpec(name);
+          {dayPlan.dishes.map((d, i) => {
+            const dish = getDishSpec(d.name);
             return (
-              <div key={name} style={{ fontSize: 13, color: "#444", padding: "6px 0", borderTop: i > 0 ? "1px solid #eee" : "none" }}>
-                {name} <span style={{ color: "#999" }}>· {dish.forMeal} · {dish.calories} kcal</span>
+              <div key={d.name} style={{ fontSize: 13, color: "#444", padding: "6px 0", borderTop: i > 0 ? "1px solid #eee" : "none" }}>
+                {d.name} <span style={{ color: "#999" }}>· {dish.forMeal} · {dish.calories} kcal · serves {d.servings}</span>
               </div>
             );
           })}
@@ -433,12 +470,14 @@ export default function Mealprep() {
       </div>
 
       <div style={sectionHeaderStyle()}>Dish details</div>
-      {dayPlan.dishNames.map((name) => {
-        const dish = getDishSpec(name);
+      {dayPlan.dishes.map((d) => {
+        const dish = getDishSpec(d.name);
         return (
-          <div key={name} style={cardStyle("#eee")}>
-            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{name}</div>
-            <div style={{ fontSize: 12, color: "#999", marginBottom: 6 }}>{dish.ingredients.length} ingredients · {dish.steps.length} steps</div>
+          <div key={d.name} style={cardStyle("#eee")}>
+            <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 6 }}>{d.name}</div>
+            <div style={{ fontSize: 12, color: "#999", marginBottom: 6 }}>
+              {dish.ingredients.length} ingredients · {dish.steps.length} steps · serves {d.servings}
+            </div>
           </div>
         );
       })}
